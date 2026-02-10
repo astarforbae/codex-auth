@@ -236,7 +236,7 @@ fn selectRemoveWithNumbers(allocator: std.mem.Allocator, reg: *registry.Registry
     }
     if (count == 0) return null;
     var selected = try allocator.alloc(usize, count);
-    var idx: usize = activeAccountIndex(reg) orelse 0;
+    var idx: usize = 0;
     for (checked, 0..) |flag, i| {
         if (!flag) continue;
         selected[idx] = i;

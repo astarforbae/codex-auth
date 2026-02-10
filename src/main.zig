@@ -159,4 +159,6 @@ test {
     _ = @import("tests/auth_test.zig");
     _ = @import("tests/sessions_test.zig");
     _ = @import("tests/registry_test.zig");
+    _ = @import("tests/registry_bdd_test.zig");
+    _ = @import("tests/cli_bdd_test.zig");
 }

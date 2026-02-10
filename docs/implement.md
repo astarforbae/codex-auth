@@ -11,6 +11,14 @@ This document describes how `codex-auth` stores accounts, synchronizes auth file
 - `~/.codex/accounts/registry.json.bak.<timestamp>`
 - `~/.codex/sessions/...`
 
+## Testing Conventions (BDD Style on std.testing)
+
+- The project keeps using Zig native tests (`zig build test`) for CI and local checks.
+- BDD scenarios are expressed in Zig `test` blocks with descriptive names like:
+  - `Scenario: Given ... when ... then ...`
+- Reusable Given/When/Then setup logic should live in test-only helper/context code under `src/tests/` (for example `*_bdd_test.zig` plus helper modules).
+- Existing unit-style tests remain valid; BDD-style tests should prioritize behavior flows and branches that are not already covered.
+
 ## First Run and Empty Registry
 
 - If `registry.json` is empty and `~/.codex/auth.json` exists, the tool auto-imports it into `accounts/<email_b64>.auth.json`.
