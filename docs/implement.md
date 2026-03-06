@@ -80,6 +80,13 @@ Important limits:
 
 ## Switching Accounts
 
+`switch` supports two modes:
+
+- Interactive: `codex-auth switch`
+- Non-interactive: `codex-auth switch <email>`
+
+For non-interactive switching, the target account is matched by email case-insensitively against the registry.
+
 When switching:
 
 1. `auth.json` is backed up if its contents would change.

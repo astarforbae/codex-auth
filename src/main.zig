@@ -23,7 +23,7 @@ pub fn main() !void {
         .list => |opts| try handleList(allocator, codex_home, opts),
         .add => |opts| try handleAdd(allocator, codex_home, opts),
         .import_auth => |opts| try handleImport(allocator, codex_home, opts),
-        .switch_account => |_| try handleSwitch(allocator, codex_home),
+        .switch_account => |opts| try handleSwitch(allocator, codex_home, opts),
         .remove_account => |_| try handleRemove(allocator, codex_home),
         .help => try cli.printHelp(),
     }
@@ -87,7 +87,7 @@ fn handleImport(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.
     }
 }
 
-fn handleSwitch(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+fn handleSwitch(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.SwitchOptions) !void {
     var reg = try registry.loadRegistry(allocator, codex_home);
     defer reg.deinit(allocator);
     if (try registry.syncActiveAccountFromAuth(allocator, codex_home, &reg)) {
@@ -97,11 +97,24 @@ fn handleSwitch(allocator: std.mem.Allocator, codex_home: []const u8) !void {
         try registry.saveRegistry(allocator, codex_home, &reg);
     }
 
-    const selected = try cli.selectAccount(allocator, &reg);
-    if (selected == null) {
-        return;
+    var selected_email: ?[]const u8 = null;
+    if (opts.email) |target_email| {
+        for (reg.accounts.items) |rec| {
+            if (std.ascii.eqlIgnoreCase(rec.email, target_email)) {
+                selected_email = rec.email;
+                break;
+            }
+        }
+        if (selected_email == null) {
+            std.log.err("account not found: {s}", .{target_email});
+            return error.AccountNotFound;
+        }
+    } else {
+        const selected = try cli.selectAccount(allocator, &reg);
+        if (selected == null) return;
+        selected_email = selected.?;
     }
-    const email = selected.?;
+    const email = selected_email.?;
 
     const src = try registry.accountAuthPath(allocator, codex_home, email);
     defer allocator.free(src);

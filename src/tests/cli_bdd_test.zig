@@ -53,3 +53,36 @@ test "Scenario: Given add with unknown flag when parsing then help command is re
 
     try std.testing.expect(isHelp(cmd));
 }
+
+test "Scenario: Given switch with positional email when parsing then non-interactive target is preserved" {
+    const gpa = std.testing.allocator;
+    const args = [_][:0]const u8{ "codex-auth", "switch", "user@example.com" };
+    var cmd = try cli.parseArgs(gpa, &args);
+    defer cli.freeCommand(gpa, &cmd);
+
+    switch (cmd) {
+        .switch_account => |opts| {
+            try std.testing.expect(opts.email != null);
+            try std.testing.expect(std.mem.eql(u8, opts.email.?, "user@example.com"));
+        },
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given switch with duplicate target when parsing then help command is returned" {
+    const gpa = std.testing.allocator;
+    const args = [_][:0]const u8{ "codex-auth", "switch", "a@example.com", "b@example.com" };
+    var cmd = try cli.parseArgs(gpa, &args);
+    defer cli.freeCommand(gpa, &cmd);
+
+    try std.testing.expect(isHelp(cmd));
+}
+
+test "Scenario: Given switch with unexpected flag when parsing then help command is returned" {
+    const gpa = std.testing.allocator;
+    const args = [_][:0]const u8{ "codex-auth", "switch", "--email", "a@example.com" };
+    var cmd = try cli.parseArgs(gpa, &args);
+    defer cli.freeCommand(gpa, &cmd);
+
+    try std.testing.expect(isHelp(cmd));
+}

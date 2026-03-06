@@ -10,7 +10,7 @@ This project provides a single Zig tool: `codex-auth`, a local-only ChatGPT acco
 ```shell
 codex-auth list # list all accounts
 codex-auth add [--no-login] # add current account (runs `codex login` by default)
-codex-auth switch # switch active account (interactive)
+codex-auth switch <email> # switch active account (interactive or non-interactive)
 codex-auth import <path> [--name <name>] # smart import: file -> single import, folder -> batch import
 codex-auth remove # remove accounts (interactive multi-select)
 ```
@@ -47,6 +47,12 @@ Switch accounts (interactive list shows email, 5h, weekly, last activity):
 codex-auth switch               # arrow + number input
 ```
 
+Switch account non-interactively (for scripts/other CLIs):
+
+```shell
+codex-auth switch user@example.com
+```
+
 Remove accounts (interactive multi-select):
 
 ```shell
@@ -61,8 +67,15 @@ codex-auth remove
 curl -fsSL https://raw.githubusercontent.com/loongphy/codex-auth/main/scripts/install.sh | bash
 ```
 
+  The installer writes the install dir to your shell profile by default.
+  Supported profiles: `~/.bashrc`/`~/.bash_profile`/`~/.profile`, `~/.zshrc`/`~/.zprofile`, `~/.config/fish/config.fish`.
+  Use `--no-add-to-path` to skip profile updates.
+
 - Windows (PowerShell, one-line, latest release):
 
 ```powershell
 irm https://raw.githubusercontent.com/loongphy/codex-auth/main/scripts/install.ps1 | iex
 ```
+
+  The installer adds the install dir to current/user `PATH` by default.
+  Use `-NoAddToPath` to skip user `PATH` persistence.

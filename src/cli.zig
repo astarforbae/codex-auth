@@ -23,7 +23,7 @@ pub const OutputFormat = enum { table, json, csv, compact };
 pub const ListOptions = struct {};
 pub const AddOptions = struct { login: bool };
 pub const ImportOptions = struct { auth_path: []u8, name: ?[]u8 };
-pub const SwitchOptions = struct {};
+pub const SwitchOptions = struct { email: ?[]u8 };
 pub const RemoveOptions = struct {};
 
 pub const Command = union(enum) {
@@ -86,8 +86,21 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const [:0]const u8) !Comm
     }
 
     if (std.mem.eql(u8, cmd, "switch")) {
-        if (args.len > 2) return Command{ .help = {} };
-        return Command{ .switch_account = .{} };
+        var email: ?[]u8 = null;
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            const arg = std.mem.sliceTo(args[i], 0);
+            if (std.mem.startsWith(u8, arg, "-")) {
+                if (email) |e| allocator.free(e);
+                return Command{ .help = {} };
+            }
+            if (email != null) {
+                if (email) |e| allocator.free(e);
+                return Command{ .help = {} };
+            }
+            email = try allocator.dupe(u8, arg);
+        }
+        return Command{ .switch_account = .{ .email = email } };
     }
 
     if (std.mem.eql(u8, cmd, "remove")) {
@@ -104,6 +117,9 @@ pub fn freeCommand(allocator: std.mem.Allocator, cmd: *Command) void {
             allocator.free(opts.auth_path);
             if (opts.name) |n| allocator.free(n);
         },
+        .switch_account => |*opts| {
+            if (opts.email) |e| allocator.free(e);
+        },
         else => {},
     }
 }
@@ -118,7 +134,7 @@ pub fn printHelp() !void {
         "  list\n" ++
         "  add [--no-login]\n" ++
         "  import <path> [--name <name>]\n" ++
-        "  switch\n" ++
+        "  switch [<email>]\n" ++
         "  remove\n"
     );
     try out.flush();
