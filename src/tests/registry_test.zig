@@ -55,7 +55,7 @@ test "registry save/load" {
 
     const rec = registry.AccountRecord{
         .email = try gpa.dupe(u8, "a@b.com"),
-        .name = try gpa.dupe(u8, "work"),
+        .alias = try gpa.dupe(u8, "work"),
         .plan = .pro,
         .auth_mode = .chatgpt,
         .created_at = 1,
@@ -155,7 +155,7 @@ test "sync active auth matches by email and updates account auth" {
 
     const rec = registry.AccountRecord{
         .email = try gpa.dupe(u8, "user@example.com"),
-        .name = try gpa.dupe(u8, "work"),
+        .alias = try gpa.dupe(u8, "work"),
         .plan = null,
         .auth_mode = null,
         .created_at = 1,
@@ -210,7 +210,7 @@ test "registry backup only on change" {
 
     const rec = registry.AccountRecord{
         .email = try gpa.dupe(u8, "user@example.com"),
-        .name = try gpa.dupe(u8, "work"),
+        .alias = try gpa.dupe(u8, "work"),
         .plan = null,
         .auth_mode = null,
         .created_at = 1,
@@ -229,7 +229,7 @@ test "registry backup only on change" {
     try std.testing.expect(count2 == 1);
 }
 
-test "import auth path with single file keeps explicit name" {
+test "import auth path with single file keeps explicit alias" {
     const gpa = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -252,7 +252,7 @@ test "import auth path with single file keeps explicit name" {
     try std.testing.expect(summary.imported == 1);
     try std.testing.expect(summary.skipped == 0);
     try std.testing.expect(reg.accounts.items.len == 1);
-    try std.testing.expect(std.mem.eql(u8, reg.accounts.items[0].name, "personal"));
+    try std.testing.expect(std.mem.eql(u8, reg.accounts.items[0].alias, "personal"));
 }
 
 test "import auth path with directory imports multiple json files and skips bad files" {
@@ -283,8 +283,8 @@ test "import auth path with directory imports multiple json files and skips bad 
     try std.testing.expect(summary.imported == 2);
     try std.testing.expect(summary.skipped == 1);
     try std.testing.expect(reg.accounts.items.len == 2);
-    try std.testing.expect(reg.accounts.items[0].name.len == 0);
-    try std.testing.expect(reg.accounts.items[1].name.len == 0);
+    try std.testing.expect(reg.accounts.items[0].alias.len == 0);
+    try std.testing.expect(reg.accounts.items[1].alias.len == 0);
 
     const path_a = try registry.accountAuthPath(gpa, codex_home, "a@example.com");
     defer gpa.free(path_a);

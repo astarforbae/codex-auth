@@ -34,7 +34,7 @@ irm https://raw.githubusercontent.com/loongphy/codex-auth/main/scripts/install.p
 codex-auth list # list all accounts
 codex-auth add [--no-login] # add current account (runs `codex login` by default)
 codex-auth switch [<email>] # switch active account (interactive or partial/fragment match)
-codex-auth import <path> [--name <name>] # smart import: file -> single import, folder -> batch import
+codex-auth import <path> [--alias <alias>] # smart import: file -> single import, folder -> batch import
 codex-auth remove # remove accounts (interactive multi-select)
 ```
 
@@ -55,7 +55,7 @@ codex-auth add
 Import an auth.json backup:
 
 ```shell
-codex-auth import /path/to/auth.json --name personal
+codex-auth import /path/to/auth.json --alias personal
 ```
 
 Batch import from a folder:

@@ -13,6 +13,7 @@ const ansi = struct {
     const dim = "\x1b[2m";
     const green = "\x1b[32m";
     const bold_green = "\x1b[1;32m";
+    const bold = "\x1b[1m";
 };
 
 fn colorEnabled() bool {
@@ -23,7 +24,7 @@ pub const OutputFormat = enum { table, json, csv, compact };
 
 pub const ListOptions = struct {};
 pub const AddOptions = struct { login: bool };
-pub const ImportOptions = struct { auth_path: []u8, name: ?[]u8 };
+pub const ImportOptions = struct { auth_path: []u8, alias: ?[]u8 };
 pub const SwitchOptions = struct { email: ?[]u8 };
 pub const RemoveOptions = struct {};
 
@@ -67,29 +68,29 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const [:0]const u8) !Comm
 
     if (std.mem.eql(u8, cmd, "import")) {
         var auth_path: ?[]u8 = null;
-        var name: ?[]u8 = null;
+        var alias: ?[]u8 = null;
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             const arg = std.mem.sliceTo(args[i], 0);
-            if (std.mem.eql(u8, arg, "--name") and i + 1 < args.len) {
-                if (name) |n| allocator.free(n);
-                name = try allocator.dupe(u8, std.mem.sliceTo(args[i + 1], 0));
+            if (std.mem.eql(u8, arg, "--alias") and i + 1 < args.len) {
+                if (alias) |a| allocator.free(a);
+                alias = try allocator.dupe(u8, std.mem.sliceTo(args[i + 1], 0));
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 if (auth_path) |p| allocator.free(p);
-                if (name) |n| allocator.free(n);
+                if (alias) |a| allocator.free(a);
                 return Command{ .help = {} };
             } else {
                 if (auth_path != null) {
                     if (auth_path) |p| allocator.free(p);
-                    if (name) |n| allocator.free(n);
+                    if (alias) |a| allocator.free(a);
                     return Command{ .help = {} };
                 }
                 auth_path = try allocator.dupe(u8, arg);
             }
         }
         if (auth_path == null) return Command{ .help = {} };
-        return Command{ .import_auth = .{ .auth_path = auth_path.?, .name = name } };
+        return Command{ .import_auth = .{ .auth_path = auth_path.?, .alias = alias } };
     }
 
     if (std.mem.eql(u8, cmd, "switch")) {
@@ -122,7 +123,7 @@ pub fn freeCommand(allocator: std.mem.Allocator, cmd: *Command) void {
     switch (cmd.*) {
         .import_auth => |*opts| {
             allocator.free(opts.auth_path);
-            if (opts.name) |n| allocator.free(n);
+            if (opts.alias) |a| allocator.free(a);
         },
         .switch_account => |*opts| {
             if (opts.email) |e| allocator.free(e);
@@ -135,17 +136,46 @@ pub fn printHelp() !void {
     var stdout: io_util.Stdout = undefined;
     stdout.init();
     const out = stdout.out();
-    try out.writeAll(
-        "codex-auth " ++ version.app_version ++ "\n\n" ++
-        "Commands:\n" ++
-        "  --version, -V\n" ++
-        "  list\n" ++
-        "  add [--no-login]\n" ++
-        "  import <path> [--name <name>]\n" ++
-        "  switch [<email-prefix-or-part>]\n" ++
-        "  remove\n"
-    );
+    const use_color = colorEnabled();
+
+    if (use_color) try out.writeAll(ansi.bold);
+    try out.writeAll("codex-auth");
+    if (use_color) try out.writeAll(ansi.reset);
+    try out.writeAll(" ");
+    if (use_color) try out.writeAll(ansi.dim);
+    try out.writeAll(version.app_version);
+    if (use_color) try out.writeAll(ansi.reset);
+    try out.writeAll("\n\n");
+
+    if (use_color) try out.writeAll(ansi.bold);
+    try out.writeAll("Commands:");
+    if (use_color) try out.writeAll(ansi.reset);
+    try out.writeAll("\n\n");
+
+    try writeHelpCommand(out, use_color, "--version, -V", "Show version");
+    try writeHelpCommand(out, use_color, "list", "List available accounts");
+    try writeHelpCommand(out, use_color, "add [--no-login]", "Add the current account");
+    try writeHelpCommand(out, use_color, "import <path> [--alias <alias>]", "Import one auth file or a directory");
+    try writeHelpCommand(out, use_color, "switch [<email-prefix-or-part>]", "Switch the active account");
+    try writeHelpCommand(out, use_color, "remove", "Remove one or more accounts");
     try out.flush();
+}
+
+fn writeHelpCommand(out: anytype, use_color: bool, name: []const u8, description: []const u8) !void {
+    if (use_color) try out.writeAll(ansi.bold_green);
+    try out.print("  {s}", .{name});
+    if (use_color) try out.writeAll(ansi.reset);
+
+    const target_col: usize = 16;
+    const visible_len = 2 + name.len;
+    const spaces = if (visible_len >= target_col) 2 else target_col - visible_len;
+    var i: usize = 0;
+    while (i < spaces) : (i += 1) {
+        try out.writeAll(" ");
+    }
+
+    try out.writeAll(description);
+    try out.writeAll("\n");
 }
 
 pub fn printVersion() !void {

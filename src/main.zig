@@ -82,7 +82,7 @@ fn handleAdd(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.Add
 fn handleImport(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.ImportOptions) !void {
     var reg = try registry.loadRegistry(allocator, codex_home);
     defer reg.deinit(allocator);
-    const summary = try registry.importAuthPath(allocator, codex_home, &reg, opts.auth_path, opts.name);
+    const summary = try registry.importAuthPath(allocator, codex_home, &reg, opts.auth_path, opts.alias);
     if (summary.imported > 0) {
         try registry.saveRegistry(allocator, codex_home, &reg);
     }

@@ -46,12 +46,12 @@ pub fn appendAccount(
     allocator: std.mem.Allocator,
     reg: *registry.Registry,
     email: []const u8,
-    name: []const u8,
+    alias: []const u8,
     plan: ?registry.PlanType,
 ) !void {
     const rec = registry.AccountRecord{
         .email = try allocator.dupe(u8, email),
-        .name = try allocator.dupe(u8, name),
+        .alias = try allocator.dupe(u8, alias),
         .plan = plan,
         .auth_mode = .chatgpt,
         .created_at = std.time.timestamp(),

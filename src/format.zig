@@ -24,13 +24,13 @@ fn planDisplay(rec: *const registry.AccountRecord, missing: []const u8) []const 
 }
 
 fn accountEmailCellLen(rec: *const registry.AccountRecord) usize {
-    if (rec.name.len == 0) return rec.email.len;
-    return rec.name.len + rec.email.len + 2;
+    if (rec.alias.len == 0) return rec.email.len;
+    return rec.alias.len + rec.email.len + 2;
 }
 
 fn formatAccountEmailCellAlloc(rec: *const registry.AccountRecord) ![]u8 {
-    if (rec.name.len == 0) return std.fmt.allocPrint(std.heap.page_allocator, "{s}", .{rec.email});
-    return std.fmt.allocPrint(std.heap.page_allocator, "({s}){s}", .{ rec.name, rec.email });
+    if (rec.alias.len == 0) return std.fmt.allocPrint(std.heap.page_allocator, "{s}", .{rec.email});
+    return std.fmt.allocPrint(std.heap.page_allocator, "({s}){s}", .{ rec.alias, rec.email });
 }
 
 pub fn printAccounts(allocator: std.mem.Allocator, reg: *registry.Registry, fmt: cli.OutputFormat) !void {

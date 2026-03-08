@@ -52,9 +52,9 @@ The email is the unique key for an account.
   - file path: imports one auth/config file.
   - directory path: batch imports config files from that directory.
 - Directory import scans only direct child files with a `.json` suffix (non-recursive), imports valid auth files, and skips invalid/malformed entries.
-- Only `import` can set account `name` (via `--name` on single-file import).
-- For directory import, `--name` is ignored.
-- Non-import flows (`add`, auto-import on empty registry, and sync-created accounts) leave `name` empty.
+- Only `import` can set account `alias` (via `--alias` on single-file import).
+- For directory import, `--alias` is ignored.
+- Non-import flows (`add`, auto-import on empty registry, and sync-created accounts) leave `alias` empty.
 
 ## Sync Behavior (Token Refresh Safety)
 
@@ -136,7 +136,7 @@ Latest rollout `.jsonl` rate limit record shape (from an `event_msg` + `token_co
 ## Output Notes
 
 - Default list table columns: `EMAIL`, `PLAN`, `5H USAGE`, `WEEKLY`, `LAST ACTIVITY`.
-- The `EMAIL` cell uses `(name)email` when a name is set for that account.
+- The `EMAIL` cell uses `(alias)email` when an alias is set for that account.
 - The switch/remove UI shows `EMAIL`, `PLAN`, `5H`, `WEEKLY`, `LAST`.
 - Usage limit cells show remaining percent plus reset time: `NN% (HH:MM)` for same-day resets, or `NN% (HH:MM on D Mon)` when the reset is on a different day.
 - `LAST ACTIVITY` is derived from `last_usage_at` and rendered as a relative time like `Now` or `2m ago`.

@@ -29,8 +29,8 @@ const SyncBddContext = struct {
         try self.tmp.dir.writeFile(.{ .sub_path = "auth.json", .data = auth_json });
     }
 
-    fn givenRegisteredAccount(self: *SyncBddContext, email: []const u8, name: []const u8, plan: ?registry.PlanType) !void {
-        try bdd.appendAccount(self.allocator, &self.reg, email, name, plan);
+    fn givenRegisteredAccount(self: *SyncBddContext, email: []const u8, alias: []const u8, plan: ?registry.PlanType) !void {
+        try bdd.appendAccount(self.allocator, &self.reg, email, alias, plan);
     }
 
     fn whenSyncActiveAccountFromAuth(self: *SyncBddContext) !bool {

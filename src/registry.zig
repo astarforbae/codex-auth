@@ -33,7 +33,7 @@ pub const RateLimitSnapshot = struct {
 
 pub const AccountRecord = struct {
     email: []u8,
-    name: []u8,
+    alias: []u8,
     plan: ?PlanType,
     auth_mode: ?AuthMode,
     created_at: i64,
@@ -64,7 +64,7 @@ pub const Registry = struct {
 
 fn freeAccountRecord(allocator: std.mem.Allocator, rec: *const AccountRecord) void {
     allocator.free(rec.email);
-    allocator.free(rec.name);
+    allocator.free(rec.alias);
     if (rec.last_usage) |*u| {
         if (u.credits) |*c| {
             if (c.balance) |b| allocator.free(b);
@@ -133,12 +133,6 @@ pub fn accountAuthPath(allocator: std.mem.Allocator, codex_home: []const u8, ema
     const key = try emailFileKey(allocator, email);
     defer allocator.free(key);
     const filename = try std.mem.concat(allocator, u8, &[_][]const u8{ key, ".auth.json" });
-    defer allocator.free(filename);
-    return try std.fs.path.join(allocator, &[_][]const u8{ codex_home, "accounts", filename });
-}
-
-fn legacyAccountAuthPath(allocator: std.mem.Allocator, codex_home: []const u8, account_key: []const u8) ![]u8 {
-    const filename = try std.mem.concat(allocator, u8, &[_][]const u8{ account_key, ".auth.json" });
     defer allocator.free(filename);
     return try std.fs.path.join(allocator, &[_][]const u8{ codex_home, "accounts", filename });
 }
@@ -311,17 +305,17 @@ pub fn importAuthPath(
     codex_home: []const u8,
     reg: *Registry,
     auth_path: []const u8,
-    explicit_name: ?[]const u8,
+    explicit_alias: ?[]const u8,
 ) !ImportSummary {
     const stat = try std.fs.cwd().statFile(auth_path);
     if (stat.kind == .directory) {
-        if (explicit_name != null) {
-            std.log.warn("--name is ignored when importing a directory: {s}", .{auth_path});
+        if (explicit_alias != null) {
+            std.log.warn("--alias is ignored when importing a directory: {s}", .{auth_path});
         }
         return try importAuthDirectory(allocator, codex_home, reg, auth_path);
     }
 
-    try importAuthFile(allocator, codex_home, reg, auth_path, explicit_name);
+    try importAuthFile(allocator, codex_home, reg, auth_path, explicit_alias);
     return ImportSummary{ .imported = 1 };
 }
 
@@ -330,13 +324,13 @@ fn importAuthFile(
     codex_home: []const u8,
     reg: *Registry,
     auth_file: []const u8,
-    explicit_name: ?[]const u8,
+    explicit_alias: ?[]const u8,
 ) !void {
     const info = try @import("auth.zig").parseAuthInfo(allocator, auth_file);
     defer info.deinit(allocator);
     const email = info.email orelse return error.MissingEmail;
 
-    const name = explicit_name orelse "";
+    const alias = explicit_alias orelse "";
 
     const dest = try accountAuthPath(allocator, codex_home, email);
     defer allocator.free(dest);
@@ -344,7 +338,7 @@ fn importAuthFile(
     try ensureAccountsDir(allocator, codex_home);
     try copyFile(auth_file, dest);
 
-    const record = try accountFromAuth(allocator, name, &info);
+    const record = try accountFromAuth(allocator, alias, &info);
     upsertAccount(allocator, reg, record);
 }
 
@@ -582,13 +576,13 @@ fn resolveRateWindow(usage: ?RateLimitSnapshot, minutes: i64, fallback_primary: 
 
 pub fn accountFromAuth(
     allocator: std.mem.Allocator,
-    name: []const u8,
+    alias: []const u8,
     info: *const @import("auth.zig").AuthInfo,
 ) !AccountRecord {
     const email = info.email orelse return error.MissingEmail;
     return AccountRecord{
         .email = try allocator.dupe(u8, email),
-        .name = try allocator.dupe(u8, name),
+        .alias = try allocator.dupe(u8, alias),
         .plan = info.plan,
         .auth_mode = info.auth_mode,
         .created_at = std.time.timestamp(),
@@ -628,33 +622,6 @@ pub fn upsertAccount(allocator: std.mem.Allocator, reg: *Registry, record: Accou
     reg.accounts.append(allocator, record) catch {};
 }
 
-fn fileExists(path: []const u8) bool {
-    if (std.fs.cwd().openFile(path, .{})) |file| {
-        file.close();
-        return true;
-    } else |_| {
-        return false;
-    }
-}
-
-fn ensureEmailAuthFile(
-    allocator: std.mem.Allocator,
-    codex_home: []const u8,
-    email: []const u8,
-    legacy_key: []const u8,
-) !void {
-    const dest = try accountAuthPath(allocator, codex_home, email);
-    defer allocator.free(dest);
-    if (fileExists(dest)) return;
-
-    const legacy = try legacyAccountAuthPath(allocator, codex_home, legacy_key);
-    defer allocator.free(legacy);
-    if (!fileExists(legacy)) return;
-
-    try ensureAccountsDir(allocator, codex_home);
-    try copyFile(legacy, dest);
-}
-
 fn loadRegistryV2(allocator: std.mem.Allocator, root_obj: std.json.ObjectMap) !Registry {
     var reg = Registry{ .version = registry_version, .active_email = null, .accounts = std.ArrayList(AccountRecord).empty };
 
@@ -674,12 +641,12 @@ fn loadRegistryV2(allocator: std.mem.Allocator, root_obj: std.json.ObjectMap) !R
                         else => continue,
                     };
                     const email_val = obj.get("email") orelse continue;
-                    const name_val = obj.get("name") orelse continue;
+                    const alias_val = obj.get("alias") orelse continue;
                     const email = switch (email_val) {
                         .string => |s| s,
                         else => continue,
                     };
-                    const name = switch (name_val) {
+                    const alias = switch (alias_val) {
                         .string => |s| s,
                         else => continue,
                     };
@@ -687,7 +654,7 @@ fn loadRegistryV2(allocator: std.mem.Allocator, root_obj: std.json.ObjectMap) !R
                     errdefer allocator.free(normalized_email);
                     var rec = AccountRecord{
                         .email = normalized_email,
-                        .name = try allocator.dupe(u8, name),
+                        .alias = try allocator.dupe(u8, alias),
                         .plan = null,
                         .auth_mode = null,
                         .created_at = readInt(obj.get("created_at")) orelse std.time.timestamp(),
@@ -719,113 +686,6 @@ fn loadRegistryV2(allocator: std.mem.Allocator, root_obj: std.json.ObjectMap) !R
             },
             else => {},
         }
-    }
-
-    return reg;
-}
-
-fn loadRegistryV1(allocator: std.mem.Allocator, codex_home: []const u8, root_obj: std.json.ObjectMap) !Registry {
-    var reg = Registry{ .version = registry_version, .active_email = null, .accounts = std.ArrayList(AccountRecord).empty };
-
-    var active_key: ?[]const u8 = null;
-    if (root_obj.get("active_account_key")) |v| {
-        switch (v) {
-            .string => |s| active_key = s,
-            else => {},
-        }
-    }
-
-    var pending_active_email: ?[]u8 = null;
-
-    if (root_obj.get("accounts")) |v| {
-        switch (v) {
-            .array => |arr| {
-                for (arr.items) |item| {
-                    const obj = switch (item) {
-                        .object => |o| o,
-                        else => continue,
-                    };
-                    const key_val = obj.get("account_key") orelse continue;
-                    const name_val = obj.get("name") orelse continue;
-                    const key = switch (key_val) {
-                        .string => |s| s,
-                        else => continue,
-                    };
-                    const name = switch (name_val) {
-                        .string => |s| s,
-                        else => continue,
-                    };
-
-                    var email: ?[]u8 = null;
-                    if (obj.get("email")) |e| {
-                        switch (e) {
-                            .string => |s| email = try normalizeEmailAlloc(allocator, s),
-                            else => {},
-                        }
-                    }
-                    if (email == null) {
-                        const legacy = try legacyAccountAuthPath(allocator, codex_home, key);
-                        defer allocator.free(legacy);
-                        if (fileExists(legacy)) {
-                            const info = try @import("auth.zig").parseAuthInfo(allocator, legacy);
-                            defer info.deinit(allocator);
-                            if (info.email) |e| {
-                                email = try allocator.dupe(u8, e);
-                            }
-                        }
-                    }
-
-                    if (email == null) {
-                        std.log.warn("Skipping legacy account without email: {s}", .{key});
-                        continue;
-                    }
-
-                    try ensureEmailAuthFile(allocator, codex_home, email.?, key);
-
-                    var rec = AccountRecord{
-                        .email = email.?,
-                        .name = try allocator.dupe(u8, name),
-                        .plan = null,
-                        .auth_mode = null,
-                        .created_at = readInt(obj.get("created_at")) orelse std.time.timestamp(),
-                        .last_used_at = null,
-                        .last_usage = null,
-                        .last_usage_at = null,
-                    };
-
-                    if (obj.get("plan")) |p| {
-                        switch (p) {
-                            .string => |s| rec.plan = parsePlanType(s),
-                            else => {},
-                        }
-                    }
-                    if (obj.get("auth_mode")) |m| {
-                        switch (m) {
-                            .string => |s| rec.auth_mode = parseAuthMode(s),
-                            else => {},
-                        }
-                    }
-                    rec.last_used_at = readInt(obj.get("last_used_at"));
-                    rec.last_usage_at = readInt(obj.get("last_usage_at"));
-                    if (obj.get("last_usage")) |u| {
-                        rec.last_usage = parseUsage(allocator, u);
-                    }
-
-                    if (active_key != null and std.mem.eql(u8, active_key.?, key)) {
-                        if (pending_active_email) |old| allocator.free(old);
-                        pending_active_email = try allocator.dupe(u8, email.?);
-                    }
-
-                    upsertAccount(allocator, &reg, rec);
-                }
-            },
-            else => {},
-        }
-    }
-
-    if (pending_active_email) |email| {
-        if (reg.active_email) |old| allocator.free(old);
-        reg.active_email = email;
     }
 
     return reg;
@@ -855,29 +715,6 @@ pub fn loadRegistry(allocator: std.mem.Allocator, codex_home: []const u8) !Regis
         .object => |o| o,
         else => return Registry{ .version = registry_version, .active_email = null, .accounts = std.ArrayList(AccountRecord).empty },
     };
-
-    var is_legacy = root_obj.get("active_account_key") != null;
-    if (!is_legacy) {
-        if (root_obj.get("accounts")) |v| {
-            switch (v) {
-                .array => |arr| {
-                    for (arr.items) |item| {
-                        const obj = switch (item) {
-                            .object => |o| o,
-                            else => continue,
-                        };
-                        if (obj.get("account_key") != null) {
-                            is_legacy = true;
-                            break;
-                        }
-                    }
-                },
-                else => {},
-            }
-        }
-    }
-
-    if (is_legacy) return loadRegistryV1(allocator, codex_home, root_obj);
     return loadRegistryV2(allocator, root_obj);
 }
 
