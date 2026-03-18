@@ -177,15 +177,42 @@ Changing thresholds updates `registry.json`; Linux/WSL and Windows pick them up 
 Changing `config api` updates `registry.json` immediately; `api enable` means API-only and `api disable` means local-sessions-only.
 `codex-auth help` also shows whether auto-switching and usage API calls are currently enabled.
 
+## Q&A
+
+### Why is my usage limit not refreshing?
+
+If `codex-auth` is using local-only usage refresh, it reads the newest `~/.codex/sessions/**/rollout-*.jsonl` file. Recent Codex builds often write `token_count` events with `rate_limits: null`. The local files may still contain older usable usage limit data, but in practice they can lag by several hours, so local-only refresh may show a usage limit snapshot from hours ago instead of your latest state.
+
+- Upstream Codex issue: [openai/codex#14880](https://github.com/openai/codex/issues/14880)
+
+You can switch usage limit refresh to the usage API with:
+
+```shell
+codex-auth config api enable
+```
+
+Then confirm the current mode with:
+
+```shell
+codex-auth status
+```
+
+`status` should show `usage: api`.
+
+Upgrade notes:
+
+- If you are upgrading from `v0.1.x` to the latest `v0.2.x`, API usage refresh is enabled by default.
+- If you previously used an early `v0.2` prerelease/test build and `status` still shows `usage: local`, run `codex-auth config api enable` once to switch to API mode.
+
 ## Disclaimer
 
 This project is provided as-is and use is at your own risk.
 
 **Usage Data Refresh Source:**
-`codex-auth` supports two sources for refreshing account usage/quota information:
+`codex-auth` supports two sources for refreshing account usage/usage limit information:
 
-1. **Local (default):** Scans local `~/.codex/sessions/*/rollout-*.jsonl` files. This mode is strictly local.
-2. **API:** When `config api enable` is on, the tool will make direct HTTPS requests to OpenAI's endpoints using your account's access token.
+1. **API (default):** When `config api enable` is on, the tool makes direct HTTPS requests to OpenAI's endpoints using your account's access token. This is the current default mode.
+2. **Local-only:** When `config api disable` is on, the tool scans local `~/.codex/sessions/*/rollout-*.jsonl` files without making API calls. This mode is safer, but it can be less accurate because recent Codex rollout files often contain `rate_limits: null`, so the latest local usage limit data may lag by several hours.
 
 **API Call Declaration:**
 By enabling API-based usage refresh, this tool will send your ChatGPT access token to OpenAI's servers (specifically `https://chatgpt.com/backend-api/wham/usage`) to fetch current quota information. This behavior may be detected by OpenAI and could violate their terms of service, potentially leading to account suspension or other risks. The decision to use this feature and any resulting consequences are entirely yours.
