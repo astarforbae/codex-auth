@@ -243,24 +243,11 @@ When auto-switching is enabled, a long-running background watcher refreshes the 
 - 5h remaining drops below the configured 5h threshold (default `10%`), or
 - weekly remaining drops below the configured weekly threshold (default `5%`)
 
-Candidate selection follows the current watcher behavior:
-
-- when `config api enable` is on, the watcher keeps a daemon-local in-memory candidate index, does bounded top-candidate upkeep in the background, and revalidates only the best few stale candidates before a switch
-- in local-only mode, accounts without any usage snapshot are still treated as fresh candidates with full quota
-- when the 5h trigger comes from an actual 300-minute window or an unlabeled primary window, free accounts use a stronger real-time 5h guard and switch no later than `35%` remaining even if the configured 5h threshold is lower
-- free accounts that expose only a single `10080`-minute weekly window are still eligible auto-switch candidates; that weekly remaining percentage is used as their candidate score
-
 The managed background worker is long-running on all supported platforms:
 
 - Linux/WSL: persistent `systemd --user` service
 - macOS: `LaunchAgent`
 - Windows: scheduled task that launches the long-running helper at logon, restarts it after failures, has no 72-hour execution cap, and also starts it immediately on enable
-
-The watcher checks local rollout usage roughly once per second and prefers local rollout events over API polling. In watch mode it caches the newest rollout file between bounded full rescans so large `~/.codex/sessions` trees are not re-walked every second. When `config api enable` is on, the usage API remains a slower fallback, active-account API cooldown resets when the active account changes, and candidate revalidation is driven by a daemon-local in-memory candidate index instead of batch-refreshing every account on every loop.
-
-Successful foreground `codex-auth` commands also reconcile the managed auto-switch service, so a disabled config removes stale background units while an enabled background worker is refreshed onto the current binary after upgrades or service drift.
-
-Changing thresholds updates `registry.json`, and the running watcher picks them up on the next polling cycle without a service restart.
 
 #### Usage Refresh Source
 
