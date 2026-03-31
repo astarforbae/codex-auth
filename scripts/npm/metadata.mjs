@@ -58,6 +58,17 @@ export const platformPackages = [
     binaryFiles: ["codex-auth.exe", "codex-auth-auto.exe"],
     archiveName: "codex-auth-Windows-X64.zip",
     zigTarget: "x86_64-windows-gnu"
+  },
+  {
+    id: "win32-arm64",
+    packageName: "@loongphy/codex-auth-win32-arm64",
+    packageDirName: "codex-auth-win32-arm64",
+    os: "win32",
+    cpu: "arm64",
+    binaryName: "codex-auth.exe",
+    binaryFiles: ["codex-auth.exe", "codex-auth-auto.exe"],
+    archiveName: "codex-auth-Windows-ARM64.zip",
+    zigTarget: "aarch64-windows-gnu"
   }
 ];
 

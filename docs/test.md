@@ -27,7 +27,12 @@ email fragment from the copied fixture accounts for your local test run.
 Recommended session setup:
 
 ```powershell
-$Exe = 'D:\test\codex-auth-win32-x64\codex-auth.exe'
+$Arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+  'Arm64' { 'arm64' }
+  'X64' { 'x64' }
+  default { throw "Unsupported architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+}
+$Exe = "D:\test\codex-auth-win32-$Arch\codex-auth.exe"
 $env:CODEX_AUTH_SKIP_SERVICE_RECONCILE = '1'
 ```
 

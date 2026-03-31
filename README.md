@@ -39,7 +39,7 @@ npm install -g @loongphy/codex-auth
 npx @loongphy/codex-auth list
 ```
 
-  npm packages currently support Linux x64, macOS x64, macOS arm64, and Windows x64.
+  npm packages currently support Linux x64, macOS x64, macOS arm64, Windows x64, and Windows arm64.
 
 > [!NOTE]
 > If you only installed `@loongphy/codex-auth` with npm, you do not need any legacy cleanup steps.

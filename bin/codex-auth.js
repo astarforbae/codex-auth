@@ -9,7 +9,8 @@ const packageMap = {
   "linux:x64": "@loongphy/codex-auth-linux-x64",
   "darwin:x64": "@loongphy/codex-auth-darwin-x64",
   "darwin:arm64": "@loongphy/codex-auth-darwin-arm64",
-  "win32:x64": "@loongphy/codex-auth-win32-x64"
+  "win32:x64": "@loongphy/codex-auth-win32-x64",
+  "win32:arm64": "@loongphy/codex-auth-win32-arm64"
 };
 
 function readRootPackage() {

@@ -15,7 +15,12 @@ param(
 $ErrorActionPreference = 'Stop'
 
 if (-not $ExePath) {
-  $ExePath = Join-Path $TestRoot 'codex-auth-win32-x64\codex-auth.exe'
+  $packageDir = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+    'Arm64' { 'codex-auth-win32-arm64' }
+    'X64' { 'codex-auth-win32-x64' }
+    default { throw "Unsupported architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+  }
+  $ExePath = Join-Path $TestRoot "$packageDir\codex-auth.exe"
 }
 
 $CodexHome = Join-Path $TestRoot '.codex'

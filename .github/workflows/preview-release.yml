@@ -26,6 +26,9 @@ jobs:
           - id: win32-x64
             zig_target: x86_64-windows-gnu
             binary_name: codex-auth.exe
+          - id: win32-arm64
+            zig_target: aarch64-windows-gnu
+            binary_name: codex-auth.exe
 
     steps:
       - name: Checkout
@@ -44,7 +47,7 @@ jobs:
         run: |
           mkdir -p "artifacts/${{ matrix.id }}/binary"
           cp "zig-out/bin/${{ matrix.binary_name }}" "artifacts/${{ matrix.id }}/binary/${{ matrix.binary_name }}"
-          if [[ "${{ matrix.id }}" == "win32-x64" ]]; then
+          if [[ "${{ matrix.id }}" == win32-* ]]; then
             cp "zig-out/bin/codex-auth-auto.exe" "artifacts/${{ matrix.id }}/binary/codex-auth-auto.exe"
           fi
 
@@ -96,3 +99,4 @@ jobs:
           ./dist/npm/codex-auth-darwin-x64
           ./dist/npm/codex-auth-darwin-arm64
           ./dist/npm/codex-auth-win32-x64
+          ./dist/npm/codex-auth-win32-arm64
