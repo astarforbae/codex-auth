@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const display_rows = @import("display_rows.zig");
 const registry = @import("registry.zig");
 const io_util = @import("io_util.zig");
+const target_rows = @import("target_rows.zig");
 const timefmt = @import("timefmt.zig");
 const version = @import("version.zig");
 const c = @cImport({
@@ -47,6 +48,31 @@ pub const RemoveOptions = struct {
     query: ?[]u8,
     all: bool,
 };
+pub const ProviderAddOptions = struct {
+    label: []u8,
+    provider_id: ?[]u8,
+    base_url: []u8,
+    api_key: []u8,
+    model: ?[]u8,
+};
+pub const ProviderUpdateOptions = struct {
+    query: []u8,
+    label: ?[]u8,
+    provider_id: ?[]u8,
+    base_url: ?[]u8,
+    api_key: ?[]u8,
+    model: ?[]u8,
+    clear_model: bool,
+};
+pub const ProviderRemoveOptions = struct {
+    query: []u8,
+};
+pub const ProviderCommand = union(enum) {
+    add: ProviderAddOptions,
+    list: void,
+    update: ProviderUpdateOptions,
+    remove: ProviderRemoveOptions,
+};
 pub const CleanOptions = struct {};
 pub const AutoAction = enum { enable, disable };
 pub const AutoThresholdOptions = struct {
@@ -74,6 +100,7 @@ pub const HelpTopic = enum {
     import_auth,
     switch_account,
     remove_account,
+    provider,
     clean,
     config,
     daemon,
@@ -85,6 +112,7 @@ pub const Command = union(enum) {
     import_auth: ImportOptions,
     switch_account: SwitchOptions,
     remove_account: RemoveOptions,
+    provider: ProviderCommand,
     clean: CleanOptions,
     config: ConfigOptions,
     status: void,
@@ -283,6 +311,10 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const [:0]const u8) !Pars
         return .{ .command = .{ .remove_account = .{ .query = query, .all = all } } };
     }
 
+    if (std.mem.eql(u8, cmd, "provider")) {
+        return try parseProviderArgs(allocator, args[2..]);
+    }
+
     if (std.mem.eql(u8, cmd, "clean")) {
         return try parseSimpleCommandArgs(allocator, "clean", .clean, .{ .clean = .{} }, args[2..]);
     }
@@ -403,6 +435,12 @@ fn freeCommand(allocator: std.mem.Allocator, cmd: *Command) void {
         .remove_account => |*opts| {
             if (opts.query) |q| allocator.free(q);
         },
+        .provider => |*provider_cmd| switch (provider_cmd.*) {
+            .add => |*opts| freeProviderAddOptions(allocator, opts),
+            .list => {},
+            .update => |*opts| freeProviderUpdateOptions(allocator, opts),
+            .remove => |*opts| allocator.free(opts.query),
+        },
         else => {},
     }
 }
@@ -461,6 +499,7 @@ fn helpTopicForName(name: []const u8) ?HelpTopic {
     if (std.mem.eql(u8, name, "status")) return .status;
     if (std.mem.eql(u8, name, "login")) return .login;
     if (std.mem.eql(u8, name, "import")) return .import_auth;
+    if (std.mem.eql(u8, name, "provider")) return .provider;
     if (std.mem.eql(u8, name, "switch")) return .switch_account;
     if (std.mem.eql(u8, name, "remove")) return .remove_account;
     if (std.mem.eql(u8, name, "clean")) return .clean;
@@ -472,6 +511,215 @@ fn helpTopicForName(name: []const u8) ?HelpTopic {
 fn freeImportOptions(allocator: std.mem.Allocator, auth_path: ?[]u8, alias: ?[]u8) void {
     if (auth_path) |path| allocator.free(path);
     if (alias) |value| allocator.free(value);
+}
+
+fn freeProviderAddOptions(allocator: std.mem.Allocator, opts: *ProviderAddOptions) void {
+    allocator.free(opts.label);
+    if (opts.provider_id) |value| allocator.free(value);
+    allocator.free(opts.base_url);
+    allocator.free(opts.api_key);
+    if (opts.model) |value| allocator.free(value);
+}
+
+fn freeProviderUpdateOptions(allocator: std.mem.Allocator, opts: *ProviderUpdateOptions) void {
+    allocator.free(opts.query);
+    if (opts.label) |value| allocator.free(value);
+    if (opts.provider_id) |value| allocator.free(value);
+    if (opts.base_url) |value| allocator.free(value);
+    if (opts.api_key) |value| allocator.free(value);
+    if (opts.model) |value| allocator.free(value);
+}
+
+fn parseProviderArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !ParseResult {
+    if (rest.len == 0) return usageErrorResult(allocator, .provider, "`provider` requires a subcommand.", .{});
+    if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
+        return .{ .command = .{ .help = .provider } };
+    }
+
+    const subcommand = std.mem.sliceTo(rest[0], 0);
+    if (std.mem.eql(u8, subcommand, "list")) {
+        return try parseSimpleCommandArgs(allocator, "provider list", .provider, .{ .provider = .{ .list = {} } }, rest[1..]);
+    }
+    if (std.mem.eql(u8, subcommand, "add")) {
+        return try parseProviderAddArgs(allocator, rest[1..]);
+    }
+    if (std.mem.eql(u8, subcommand, "update")) {
+        return try parseProviderUpdateArgs(allocator, rest[1..]);
+    }
+    if (std.mem.eql(u8, subcommand, "remove")) {
+        return try parseProviderRemoveArgs(allocator, rest[1..]);
+    }
+    return usageErrorResult(allocator, .provider, "unknown provider subcommand `{s}`.", .{subcommand});
+}
+
+fn parseProviderAddArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !ParseResult {
+    if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
+        return .{ .command = .{ .help = .provider } };
+    }
+
+    var opts = ProviderAddOptions{
+        .label = &.{},
+        .provider_id = null,
+        .base_url = &.{},
+        .api_key = &.{},
+        .model = null,
+    };
+    var has_label = false;
+    var has_base_url = false;
+    var has_api_key = false;
+    errdefer freeProviderAddOptions(allocator, &opts);
+
+    var i: usize = 0;
+    while (i < rest.len) : (i += 1) {
+        const arg = std.mem.sliceTo(rest[i], 0);
+        if (std.mem.eql(u8, arg, "--provider-id")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--provider-id`.", .{});
+            if (opts.provider_id != null) return usageErrorResult(allocator, .provider, "duplicate `--provider-id` for `provider add`.", .{});
+            opts.provider_id = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--base-url")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--base-url`.", .{});
+            if (has_base_url) return usageErrorResult(allocator, .provider, "duplicate `--base-url` for `provider add`.", .{});
+            opts.base_url = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            has_base_url = true;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--api-key")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--api-key`.", .{});
+            if (has_api_key) return usageErrorResult(allocator, .provider, "duplicate `--api-key` for `provider add`.", .{});
+            opts.api_key = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            has_api_key = true;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--model")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--model`.", .{});
+            if (opts.model != null) return usageErrorResult(allocator, .provider, "duplicate `--model` for `provider add`.", .{});
+            opts.model = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            i += 1;
+            continue;
+        }
+        if (isHelpFlag(arg)) {
+            return usageErrorResult(allocator, .provider, "`--help` must be used by itself for `provider add`.", .{});
+        }
+        if (std.mem.startsWith(u8, arg, "-")) {
+            return usageErrorResult(allocator, .provider, "unknown flag `{s}` for `provider add`.", .{arg});
+        }
+        if (has_label) {
+            return usageErrorResult(allocator, .provider, "unexpected extra label `{s}` for `provider add`.", .{arg});
+        }
+        opts.label = try allocator.dupe(u8, arg);
+        has_label = true;
+    }
+
+    if (!has_label) return usageErrorResult(allocator, .provider, "`provider add` requires a label.", .{});
+    if (!has_base_url) return usageErrorResult(allocator, .provider, "`provider add` requires `--base-url`.", .{});
+    if (!has_api_key) return usageErrorResult(allocator, .provider, "`provider add` requires `--api-key`.", .{});
+
+    return .{ .command = .{ .provider = .{ .add = opts } } };
+}
+
+fn parseProviderUpdateArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !ParseResult {
+    if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
+        return .{ .command = .{ .help = .provider } };
+    }
+
+    var opts = ProviderUpdateOptions{
+        .query = &.{},
+        .label = null,
+        .provider_id = null,
+        .base_url = null,
+        .api_key = null,
+        .model = null,
+        .clear_model = false,
+    };
+    var has_query = false;
+    errdefer freeProviderUpdateOptions(allocator, &opts);
+
+    var i: usize = 0;
+    while (i < rest.len) : (i += 1) {
+        const arg = std.mem.sliceTo(rest[i], 0);
+        if (std.mem.eql(u8, arg, "--label")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--label`.", .{});
+            if (opts.label != null) return usageErrorResult(allocator, .provider, "duplicate `--label` for `provider update`.", .{});
+            opts.label = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--provider-id")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--provider-id`.", .{});
+            if (opts.provider_id != null) return usageErrorResult(allocator, .provider, "duplicate `--provider-id` for `provider update`.", .{});
+            opts.provider_id = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--base-url")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--base-url`.", .{});
+            if (opts.base_url != null) return usageErrorResult(allocator, .provider, "duplicate `--base-url` for `provider update`.", .{});
+            opts.base_url = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--api-key")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--api-key`.", .{});
+            if (opts.api_key != null) return usageErrorResult(allocator, .provider, "duplicate `--api-key` for `provider update`.", .{});
+            opts.api_key = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--model")) {
+            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--model`.", .{});
+            if (opts.model != null or opts.clear_model) return usageErrorResult(allocator, .provider, "`provider update` cannot combine duplicate model updates.", .{});
+            opts.model = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--clear-model")) {
+            if (opts.model != null or opts.clear_model) return usageErrorResult(allocator, .provider, "`provider update` cannot combine duplicate model updates.", .{});
+            opts.clear_model = true;
+            continue;
+        }
+        if (isHelpFlag(arg)) {
+            return usageErrorResult(allocator, .provider, "`--help` must be used by itself for `provider update`.", .{});
+        }
+        if (std.mem.startsWith(u8, arg, "-")) {
+            return usageErrorResult(allocator, .provider, "unknown flag `{s}` for `provider update`.", .{arg});
+        }
+        if (has_query) {
+            return usageErrorResult(allocator, .provider, "unexpected extra query `{s}` for `provider update`.", .{arg});
+        }
+        opts.query = try allocator.dupe(u8, arg);
+        has_query = true;
+    }
+
+    if (!has_query) return usageErrorResult(allocator, .provider, "`provider update` requires a query.", .{});
+    if (opts.label == null and opts.provider_id == null and opts.base_url == null and opts.api_key == null and opts.model == null and !opts.clear_model) {
+        return usageErrorResult(allocator, .provider, "`provider update` requires at least one update flag.", .{});
+    }
+
+    return .{ .command = .{ .provider = .{ .update = opts } } };
+}
+
+fn parseProviderRemoveArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !ParseResult {
+    if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
+        return .{ .command = .{ .help = .provider } };
+    }
+    if (rest.len == 0) return usageErrorResult(allocator, .provider, "`provider remove` requires a query.", .{});
+    if (rest.len > 1) {
+        return usageErrorResult(allocator, .provider, "unexpected extra query `{s}` for `provider remove`.", .{
+            std.mem.sliceTo(rest[1], 0),
+        });
+    }
+    const query = std.mem.sliceTo(rest[0], 0);
+    if (std.mem.startsWith(u8, query, "-")) {
+        return usageErrorResult(allocator, .provider, "unknown flag `{s}` for `provider remove`.", .{query});
+    }
+    return .{ .command = .{ .provider = .{ .remove = .{
+        .query = try allocator.dupe(u8, query),
+    } } } };
 }
 
 pub fn printHelp(auto_cfg: *const registry.AutoSwitchConfig, api_cfg: *const registry.ApiConfig) !void {
@@ -543,6 +791,7 @@ pub fn writeHelp(
         .{ .name = "import", .description = "Import auth files or rebuild registry" },
         .{ .name = "switch [<query>]", .description = "Switch the active account" },
         .{ .name = "remove [<query>|--all]", .description = "Remove one or more accounts" },
+        .{ .name = "provider", .description = "Manage provider profiles" },
         .{ .name = "clean", .description = "Delete backup and stale files under accounts/" },
         .{ .name = "config", .description = "Manage configuration" },
     };
@@ -561,11 +810,18 @@ pub fn writeHelp(
         .{ .name = "list enable", .description = "Refresh all accounts before `list` output" },
         .{ .name = "list disable", .description = "Keep `list` on active-account refresh only" },
     };
+    const provider_details = [_]HelpEntry{
+        .{ .name = "add <label> --base-url <url> --api-key <key>", .description = "Create or replace a provider profile" },
+        .{ .name = "list", .description = "List saved provider profiles" },
+        .{ .name = "update <query> [flags...]", .description = "Update one provider profile" },
+        .{ .name = "remove <query>", .description = "Remove one provider profile" },
+    };
     const parent_indent: usize = 2;
     const child_indent: usize = parent_indent + 4;
     const child_description_extra: usize = 4;
     const command_col = helpTargetColumn(&commands, parent_indent);
     const import_detail_col = @max(command_col + child_description_extra, helpTargetColumn(&import_details, child_indent));
+    const provider_detail_col = @max(command_col + child_description_extra, helpTargetColumn(&provider_details, child_indent));
     const config_detail_col = @max(command_col + child_description_extra, helpTargetColumn(&config_details, child_indent));
 
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[0].name, commands[0].description);
@@ -580,7 +836,12 @@ pub fn writeHelp(
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[5].name, commands[5].description);
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[6].name, commands[6].description);
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[7].name, commands[7].description);
+    try writeHelpEntry(out, use_color, child_indent, provider_detail_col, provider_details[0].name, provider_details[0].description);
+    try writeHelpEntry(out, use_color, child_indent, provider_detail_col, provider_details[1].name, provider_details[1].description);
+    try writeHelpEntry(out, use_color, child_indent, provider_detail_col, provider_details[2].name, provider_details[2].description);
+    try writeHelpEntry(out, use_color, child_indent, provider_detail_col, provider_details[3].name, provider_details[3].description);
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[8].name, commands[8].description);
+    try writeHelpEntry(out, use_color, parent_indent, command_col, commands[9].name, commands[9].description);
     try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[0].name, config_details[0].description);
     try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[1].name, config_details[1].description);
     try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[2].name, config_details[2].description);
@@ -679,6 +940,7 @@ fn commandNameForTopic(topic: HelpTopic) []const u8 {
         .import_auth => "import",
         .switch_account => "switch",
         .remove_account => "remove",
+        .provider => "provider",
         .clean => "clean",
         .config => "config",
         .daemon => "daemon",
@@ -694,6 +956,7 @@ fn commandDescriptionForTopic(topic: HelpTopic) []const u8 {
         .import_auth => "Import auth files or rebuild the registry.",
         .switch_account => "Switch the active account interactively or by query.",
         .remove_account => "Remove one or more accounts.",
+        .provider => "Manage provider profiles.",
         .clean => "Delete backup and stale files under accounts/.",
         .config => "Manage auto-switch and usage API configuration.",
         .daemon => "Run the background auto-switch daemon.",
@@ -702,7 +965,7 @@ fn commandDescriptionForTopic(topic: HelpTopic) []const u8 {
 
 fn commandHelpHasExamples(topic: HelpTopic) bool {
     return switch (topic) {
-        .import_auth, .switch_account, .remove_account, .config, .daemon => true,
+        .import_auth, .switch_account, .remove_account, .provider, .config, .daemon => true,
         else => false,
     };
 }
@@ -734,6 +997,12 @@ fn writeUsageSection(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth remove\n");
             try out.writeAll("  codex-auth remove <query>\n");
             try out.writeAll("  codex-auth remove --all\n");
+        },
+        .provider => {
+            try out.writeAll("  codex-auth provider add <label> --base-url <url> --api-key <key> [--provider-id <id>] [--model <model>]\n");
+            try out.writeAll("  codex-auth provider list\n");
+            try out.writeAll("  codex-auth provider update <query> [--label <label>] [--provider-id <id>] [--base-url <url>] [--api-key <key>] [--model <model>]\n");
+            try out.writeAll("  codex-auth provider remove <query>\n");
         },
         .clean => try out.writeAll("  codex-auth clean\n"),
         .config => {
@@ -781,6 +1050,12 @@ fn writeExamplesSection(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth remove john@example.com\n");
             try out.writeAll("  codex-auth remove --all\n");
         },
+        .provider => {
+            try out.writeAll("  codex-auth provider add openrouter --base-url https://openrouter.ai/api/v1 --api-key sk-test\n");
+            try out.writeAll("  codex-auth provider list\n");
+            try out.writeAll("  codex-auth provider update openrouter --model gpt-5.4\n");
+            try out.writeAll("  codex-auth provider remove openrouter\n");
+        },
         .clean => try out.writeAll("  codex-auth clean\n"),
         .config => {
             try out.writeAll("  codex-auth config auto --5h 12 --weekly 8\n");
@@ -817,6 +1092,7 @@ fn helpCommandForTopic(topic: HelpTopic) []const u8 {
         .import_auth => "codex-auth import --help",
         .switch_account => "codex-auth switch --help",
         .remove_account => "codex-auth remove --help",
+        .provider => "codex-auth provider --help",
         .clean => "codex-auth clean --help",
         .config => "codex-auth config --help",
         .daemon => "codex-auth daemon --help",
@@ -909,6 +1185,42 @@ pub fn printAccountNotFoundError(query: []const u8) !void {
     const use_color = stderrColorEnabled();
     try writeErrorPrefixTo(out, use_color);
     try out.print(" no account matches '{s}'.\n", .{query});
+    try out.flush();
+}
+
+pub fn printProviderProfileNotFoundError(query: []const u8) !void {
+    var buffer: [512]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    const out = &writer.interface;
+    const use_color = stderrColorEnabled();
+    try writeErrorPrefixTo(out, use_color);
+    try out.print(" no provider profile matches '{s}'.\n", .{query});
+    try out.flush();
+}
+
+pub fn printProviderProfileConflictError(profile_id: []const u8) !void {
+    var buffer: [512]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    const out = &writer.interface;
+    const use_color = stderrColorEnabled();
+    try writeErrorPrefixTo(out, use_color);
+    try out.print(" provider profile '{s}' already exists.\n", .{profile_id});
+    try out.flush();
+}
+
+pub fn printProviderProfileAmbiguousError(query: []const u8, labels: []const []const u8) !void {
+    var buffer: [1024]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    const out = &writer.interface;
+    const use_color = stderrColorEnabled();
+    try out.writeAll("Matched multiple provider profiles:\n");
+    for (labels) |label| {
+        try out.print("- {s}\n", .{label});
+    }
+    try writeErrorPrefixTo(out, use_color);
+    try out.print(" multiple provider profiles match '{s}'.\n", .{query});
+    try writeHintPrefixTo(out, use_color);
+    try out.writeAll(" Refine the query to one provider profile.\n");
     try out.flush();
 }
 
@@ -1104,6 +1416,535 @@ pub fn selectAccountsToRemove(allocator: std.mem.Allocator, reg: *registry.Regis
         return selectRemoveWithNumbers(allocator, reg);
     }
     return selectRemoveInteractive(allocator, reg) catch selectRemoveWithNumbers(allocator, reg);
+}
+
+pub fn selectTarget(allocator: std.mem.Allocator, reg: *registry.Registry) !?target_rows.TargetRef {
+    return if (comptime builtin.os.tag == .windows)
+        selectTargetWithNumbers(allocator, reg, null)
+    else
+        selectTargetInteractive(allocator, reg, null) catch selectTargetWithNumbers(allocator, reg, null);
+}
+
+pub fn selectTargetFromRefs(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    refs: []const target_rows.TargetRef,
+) !?target_rows.TargetRef {
+    if (refs.len == 0) return null;
+    if (refs.len == 1) return refs[0];
+    return if (comptime builtin.os.tag == .windows)
+        selectTargetWithNumbers(allocator, reg, refs)
+    else
+        selectTargetInteractive(allocator, reg, refs) catch selectTargetWithNumbers(allocator, reg, refs);
+}
+
+pub fn selectTargetsToRemove(allocator: std.mem.Allocator, reg: *registry.Registry) !?[]target_rows.TargetRef {
+    if (comptime builtin.os.tag == .windows) {
+        return selectTargetRemoveWithNumbers(allocator, reg);
+    }
+    if (shouldUseNumberedRemoveSelector(false, std.fs.File.stdin().isTty())) {
+        return selectTargetRemoveWithNumbers(allocator, reg);
+    }
+    return selectTargetRemoveInteractive(allocator, reg) catch selectTargetRemoveWithNumbers(allocator, reg);
+}
+
+pub fn buildRemoveLabelsForTargets(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    refs: []const target_rows.TargetRef,
+) !std.ArrayList([]const u8) {
+    var labels = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (labels.items) |label| allocator.free(@constCast(label));
+        labels.deinit(allocator);
+    }
+
+    var rows = try target_rows.buildTargetRows(allocator, reg, refs);
+    defer rows.deinit(allocator);
+    var current_header: ?[]const u8 = null;
+
+    for (rows.rows) |row| {
+        if (row.is_header) {
+            current_header = if (row.kind == .account) row.account_cell else null;
+            continue;
+        }
+
+        if (row.kind == .provider_profile) {
+            try labels.append(allocator, try std.fmt.allocPrint(allocator, "provider / {s}", .{row.account_cell}));
+            continue;
+        }
+
+        const rec = &reg.accounts.items[row.account_index.?];
+        const label = if (row.depth == 0 or current_header == null) blk: {
+            if (std.mem.eql(u8, row.account_cell, rec.email)) {
+                const preferred = try display_rows.buildPreferredAccountLabelAlloc(allocator, rec, rec.email);
+                defer allocator.free(preferred);
+                if (std.mem.eql(u8, preferred, rec.email)) {
+                    break :blk try allocator.dupe(u8, row.account_cell);
+                }
+                break :blk try std.fmt.allocPrint(allocator, "{s} / {s}", .{ rec.email, preferred });
+            }
+            break :blk try std.fmt.allocPrint(allocator, "{s} / {s}", .{ rec.email, row.account_cell });
+        } else try std.fmt.allocPrint(allocator, "{s} / {s}", .{ current_header.?, row.account_cell });
+        try labels.append(allocator, label);
+    }
+    return labels;
+}
+
+const TargetSwitchRows = struct {
+    rows: target_rows.TargetRows,
+    widths: SwitchWidths,
+
+    fn deinit(self: *TargetSwitchRows, allocator: std.mem.Allocator) void {
+        self.rows.deinit(allocator);
+    }
+};
+
+fn buildTargetSwitchRows(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    refs: ?[]const target_rows.TargetRef,
+) !TargetSwitchRows {
+    var rows = try target_rows.buildTargetRows(allocator, reg, refs);
+    errdefer rows.deinit(allocator);
+    var widths = SwitchWidths{
+        .email = "ACCOUNT".len,
+        .plan = "PLAN".len,
+        .rate_5h = "5H".len,
+        .rate_week = "WEEKLY".len,
+        .last = "LAST".len,
+    };
+    for (rows.rows) |row| {
+        widths.email = @max(widths.email, row.account_cell.len + @as(usize, row.depth) * 2);
+        if (!row.is_header) {
+            widths.plan = @max(widths.plan, row.plan_cell.len);
+            widths.rate_5h = @max(widths.rate_5h, row.rate_5h_cell.len);
+            widths.rate_week = @max(widths.rate_week, row.rate_week_cell.len);
+            widths.last = @max(widths.last, row.last_cell.len);
+        }
+    }
+    if (widths.email > 32) widths.email = 32;
+    return .{ .rows = rows, .widths = widths };
+}
+
+fn activeTargetSelectableIndex(rows: *const TargetSwitchRows) ?usize {
+    for (rows.rows.selectable_row_indices, 0..) |row_idx, pos| {
+        if (rows.rows.rows[row_idx].is_active) return pos;
+    }
+    return null;
+}
+
+fn targetRefForSelectable(rows: *const TargetSwitchRows, selectable_idx: usize) target_rows.TargetRef {
+    const row_idx = rows.rows.selectable_row_indices[selectable_idx];
+    const row = rows.rows.rows[row_idx];
+    return switch (row.kind) {
+        .account => .{ .account = row.account_index.? },
+        .provider_profile => .{ .provider_profile = row.provider_profile_index.? },
+    };
+}
+
+fn selectTargetWithNumbers(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    refs: ?[]const target_rows.TargetRef,
+) !?target_rows.TargetRef {
+    var stdout: io_util.Stdout = undefined;
+    stdout.init();
+    const out = stdout.out();
+    var rows = try buildTargetSwitchRows(allocator, reg, refs);
+    defer rows.deinit(allocator);
+    if (rows.rows.selectable_row_indices.len == 0) return null;
+
+    const use_color = colorEnabled();
+    const active_idx = activeTargetSelectableIndex(&rows);
+    const idx_width = @max(@as(usize, 2), indexWidth(rows.rows.selectable_row_indices.len));
+
+    try out.writeAll("Select target to activate:\n\n");
+    try renderTargetSwitchList(out, rows.rows.rows, idx_width, rows.widths, active_idx, use_color);
+    try out.writeAll("Select target number (or q to quit): ");
+    try out.flush();
+
+    var buf: [64]u8 = undefined;
+    const n = try std.fs.File.stdin().read(&buf);
+    const line = std.mem.trim(u8, buf[0..n], " \n\r\t");
+    if (line.len == 0) {
+        if (active_idx) |i| return targetRefForSelectable(&rows, i);
+        return null;
+    }
+    if (isQuitInput(line)) return null;
+    const idx = std.fmt.parseInt(usize, line, 10) catch return null;
+    if (idx == 0 or idx > rows.rows.selectable_row_indices.len) return null;
+    return targetRefForSelectable(&rows, idx - 1);
+}
+
+fn selectTargetInteractive(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    refs: ?[]const target_rows.TargetRef,
+) !?target_rows.TargetRef {
+    var rows = try buildTargetSwitchRows(allocator, reg, refs);
+    defer rows.deinit(allocator);
+    if (rows.rows.selectable_row_indices.len == 0) return null;
+
+    var tty = try std.fs.cwd().openFile("/dev/tty", .{});
+    defer tty.close();
+    const term = try std.posix.tcgetattr(tty.handle);
+    var raw = term;
+    raw.lflag.ICANON = false;
+    raw.lflag.ECHO = false;
+    raw.cc[@intFromEnum(std.c.V.MIN)] = 1;
+    raw.cc[@intFromEnum(std.c.V.TIME)] = 0;
+    try std.posix.tcsetattr(tty.handle, .FLUSH, raw);
+    defer std.posix.tcsetattr(tty.handle, .FLUSH, term) catch {};
+
+    var stdout: io_util.Stdout = undefined;
+    stdout.init();
+    const out = stdout.out();
+    var idx: usize = activeTargetSelectableIndex(&rows) orelse 0;
+    var number_buf: [8]u8 = undefined;
+    var number_len: usize = 0;
+    const use_color = colorEnabled();
+    const idx_width = @max(@as(usize, 2), indexWidth(rows.rows.selectable_row_indices.len));
+
+    while (true) {
+        try out.writeAll("\x1b[2J\x1b[H");
+        try out.writeAll("Select target to activate:\n\n");
+        try renderTargetSwitchList(out, rows.rows.rows, idx_width, rows.widths, idx, use_color);
+        try out.writeAll("\n");
+        if (use_color) try out.writeAll(ansi.dim);
+        try out.writeAll("Keys: ↑/↓ or j/k, Enter select, 1-9 type, Backspace edit, Esc or q quit\n");
+        if (use_color) try out.writeAll(ansi.reset);
+        try out.flush();
+
+        var b: [8]u8 = undefined;
+        const n = try tty.read(&b);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (b[i] == 0x1b) {
+                if (i + 2 < n and b[i + 1] == '[') {
+                    const code = b[i + 2];
+                    if (code == 'A' and idx > 0) idx -= 1 else if (code == 'B' and idx + 1 < rows.rows.selectable_row_indices.len) idx += 1;
+                    number_len = 0;
+                    i += 2;
+                    continue;
+                }
+                return null;
+            }
+            if (b[i] == '\r' or b[i] == '\n') {
+                if (number_len > 0) {
+                    const parsed = std.fmt.parseInt(usize, number_buf[0..number_len], 10) catch 0;
+                    if (parsed >= 1 and parsed <= rows.rows.selectable_row_indices.len) return targetRefForSelectable(&rows, parsed - 1);
+                }
+                return targetRefForSelectable(&rows, idx);
+            }
+            if (isQuitKey(b[i])) return null;
+            if (b[i] == 'k' and idx > 0) {
+                idx -= 1;
+                number_len = 0;
+                continue;
+            }
+            if (b[i] == 'j' and idx + 1 < rows.rows.selectable_row_indices.len) {
+                idx += 1;
+                number_len = 0;
+                continue;
+            }
+            if (b[i] == 0x7f or b[i] == 0x08) {
+                if (number_len > 0) {
+                    number_len -= 1;
+                    if (number_len > 0) {
+                        const parsed = std.fmt.parseInt(usize, number_buf[0..number_len], 10) catch 0;
+                        if (parsed >= 1 and parsed <= rows.rows.selectable_row_indices.len) idx = parsed - 1;
+                    }
+                }
+                continue;
+            }
+            if (b[i] >= '0' and b[i] <= '9' and number_len < number_buf.len) {
+                number_buf[number_len] = b[i];
+                number_len += 1;
+                const parsed = std.fmt.parseInt(usize, number_buf[0..number_len], 10) catch 0;
+                if (parsed >= 1 and parsed <= rows.rows.selectable_row_indices.len) idx = parsed - 1;
+            }
+        }
+    }
+}
+
+fn selectTargetRemoveWithNumbers(allocator: std.mem.Allocator, reg: *registry.Registry) !?[]target_rows.TargetRef {
+    var stdout: io_util.Stdout = undefined;
+    stdout.init();
+    const out = stdout.out();
+    var rows = try buildTargetSwitchRows(allocator, reg, null);
+    defer rows.deinit(allocator);
+    if (rows.rows.selectable_row_indices.len == 0) return null;
+
+    const use_color = colorEnabled();
+    const idx_width = @max(@as(usize, 2), indexWidth(rows.rows.selectable_row_indices.len));
+    var checked = try allocator.alloc(bool, rows.rows.selectable_row_indices.len);
+    defer allocator.free(checked);
+    @memset(checked, false);
+
+    try out.writeAll("Select targets to delete:\n\n");
+    try renderTargetRemoveList(out, rows.rows.rows, idx_width, rows.widths, null, checked, use_color);
+    try out.writeAll("Enter target numbers (comma/space separated, empty to cancel): ");
+    try out.flush();
+
+    var buf: [256]u8 = undefined;
+    const n = try std.fs.File.stdin().read(&buf);
+    const line = std.mem.trim(u8, buf[0..n], " \n\r\t");
+    if (line.len == 0) return null;
+    if (!isStrictRemoveSelectionLine(line)) return error.InvalidRemoveSelectionInput;
+
+    var current: usize = 0;
+    var in_number = false;
+    for (line) |ch| {
+        if (ch >= '0' and ch <= '9') {
+            current = current * 10 + @as(usize, ch - '0');
+            in_number = true;
+            continue;
+        }
+        if (in_number) {
+            if (current >= 1 and current <= rows.rows.selectable_row_indices.len) checked[current - 1] = true;
+            current = 0;
+            in_number = false;
+        }
+    }
+    if (in_number and current >= 1 and current <= rows.rows.selectable_row_indices.len) checked[current - 1] = true;
+
+    var count: usize = 0;
+    for (checked) |flag| {
+        if (flag) count += 1;
+    }
+    if (count == 0) return null;
+    var selected = try allocator.alloc(target_rows.TargetRef, count);
+    var out_idx: usize = 0;
+    for (checked, 0..) |flag, i| {
+        if (!flag) continue;
+        selected[out_idx] = targetRefForSelectable(&rows, i);
+        out_idx += 1;
+    }
+    return selected;
+}
+
+fn selectTargetRemoveInteractive(allocator: std.mem.Allocator, reg: *registry.Registry) !?[]target_rows.TargetRef {
+    var rows = try buildTargetSwitchRows(allocator, reg, null);
+    defer rows.deinit(allocator);
+    if (rows.rows.selectable_row_indices.len == 0) return null;
+
+    var tty = try std.fs.cwd().openFile("/dev/tty", .{});
+    defer tty.close();
+    const term = try std.posix.tcgetattr(tty.handle);
+    var raw = term;
+    raw.lflag.ICANON = false;
+    raw.lflag.ECHO = false;
+    raw.cc[@intFromEnum(std.c.V.MIN)] = 1;
+    raw.cc[@intFromEnum(std.c.V.TIME)] = 0;
+    try std.posix.tcsetattr(tty.handle, .FLUSH, raw);
+    defer std.posix.tcsetattr(tty.handle, .FLUSH, term) catch {};
+
+    var checked = try allocator.alloc(bool, rows.rows.selectable_row_indices.len);
+    defer allocator.free(checked);
+    @memset(checked, false);
+    var stdout: io_util.Stdout = undefined;
+    stdout.init();
+    const out = stdout.out();
+    var idx: usize = 0;
+    var number_buf: [8]u8 = undefined;
+    var number_len: usize = 0;
+    const use_color = colorEnabled();
+    const idx_width = @max(@as(usize, 2), indexWidth(rows.rows.selectable_row_indices.len));
+
+    while (true) {
+        try out.writeAll("\x1b[2J\x1b[H");
+        try out.writeAll("Select targets to delete:\n\n");
+        try renderTargetRemoveList(out, rows.rows.rows, idx_width, rows.widths, idx, checked, use_color);
+        try out.writeAll("\n");
+        if (use_color) try out.writeAll(ansi.dim);
+        try out.writeAll("Keys: ↑/↓ or j/k move, Space toggle, Enter delete, 1-9 type, Backspace edit, Esc exit\n");
+        if (use_color) try out.writeAll(ansi.reset);
+        try out.flush();
+
+        var b: [8]u8 = undefined;
+        const n = try tty.read(&b);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (b[i] == 0x1b) {
+                if (i + 2 < n and b[i + 1] == '[') {
+                    const code = b[i + 2];
+                    if (code == 'A' and idx > 0) idx -= 1 else if (code == 'B' and idx + 1 < rows.rows.selectable_row_indices.len) idx += 1;
+                    number_len = 0;
+                    i += 2;
+                    continue;
+                }
+                return null;
+            }
+            if (b[i] == '\r' or b[i] == '\n') {
+                var count: usize = 0;
+                for (checked) |flag| {
+                    if (flag) count += 1;
+                }
+                if (count == 0) return null;
+                var selected = try allocator.alloc(target_rows.TargetRef, count);
+                var out_idx: usize = 0;
+                for (checked, 0..) |flag, sel_idx| {
+                    if (!flag) continue;
+                    selected[out_idx] = targetRefForSelectable(&rows, sel_idx);
+                    out_idx += 1;
+                }
+                return selected;
+            }
+            if (b[i] == 'k' and idx > 0) {
+                idx -= 1;
+                number_len = 0;
+                continue;
+            }
+            if (b[i] == 'j' and idx + 1 < rows.rows.selectable_row_indices.len) {
+                idx += 1;
+                number_len = 0;
+                continue;
+            }
+            if (b[i] == ' ') {
+                checked[idx] = !checked[idx];
+                number_len = 0;
+                continue;
+            }
+            if (b[i] == 0x7f or b[i] == 0x08) {
+                if (number_len > 0) {
+                    number_len -= 1;
+                    if (number_len > 0) {
+                        const parsed = std.fmt.parseInt(usize, number_buf[0..number_len], 10) catch 0;
+                        if (parsed >= 1 and parsed <= rows.rows.selectable_row_indices.len) idx = parsed - 1;
+                    }
+                }
+                continue;
+            }
+            if (b[i] >= '0' and b[i] <= '9' and number_len < number_buf.len) {
+                number_buf[number_len] = b[i];
+                number_len += 1;
+                const parsed = std.fmt.parseInt(usize, number_buf[0..number_len], 10) catch 0;
+                if (parsed >= 1 and parsed <= rows.rows.selectable_row_indices.len) idx = parsed - 1;
+            }
+        }
+    }
+}
+
+fn renderTargetSwitchList(
+    out: *std.Io.Writer,
+    rows: []const target_rows.TargetRow,
+    idx_width: usize,
+    widths: SwitchWidths,
+    selected: ?usize,
+    use_color: bool,
+) !void {
+    const prefix = 2 + idx_width + 1;
+    var pad: usize = 0;
+    while (pad < prefix) : (pad += 1) try out.writeAll(" ");
+    try writePadded(out, "ACCOUNT", widths.email);
+    try out.writeAll("  ");
+    try writePadded(out, "PLAN", widths.plan);
+    try out.writeAll("  ");
+    try writePadded(out, "5H", widths.rate_5h);
+    try out.writeAll("  ");
+    try writePadded(out, "WEEKLY", widths.rate_week);
+    try out.writeAll("  ");
+    try writePadded(out, "LAST", widths.last);
+    try out.writeAll("\n");
+
+    var selectable_counter: usize = 0;
+    for (rows) |row| {
+        if (row.is_header) {
+            if (use_color) try out.writeAll(ansi.dim);
+            try out.writeAll("  ");
+            var pad_header: usize = 0;
+            while (pad_header < idx_width + 1) : (pad_header += 1) try out.writeAll(" ");
+            try writeTruncatedPadded(out, row.account_cell, widths.email);
+            try out.writeAll("\n");
+            if (use_color) try out.writeAll(ansi.reset);
+            continue;
+        }
+
+        const is_selected = selected != null and selected.? == selectable_counter;
+        if (use_color) {
+            if (is_selected) try out.writeAll(ansi.bold_green) else if (row.is_active) try out.writeAll(ansi.green) else try out.writeAll(ansi.dim);
+        }
+        try out.writeAll(if (is_selected) "> " else "  ");
+        try writeIndexPadded(out, selectable_counter + 1, idx_width);
+        try out.writeAll(" ");
+        try writeTruncatedPadded(out, row.account_cell, widths.email);
+        try out.writeAll("  ");
+        try writeTruncatedPadded(out, row.plan_cell, widths.plan);
+        try out.writeAll("  ");
+        try writeTruncatedPadded(out, row.rate_5h_cell, widths.rate_5h);
+        try out.writeAll("  ");
+        try writeTruncatedPadded(out, row.rate_week_cell, widths.rate_week);
+        try out.writeAll("  ");
+        try writeTruncatedPadded(out, row.last_cell, widths.last);
+        if (row.is_active) try out.writeAll("  [ACTIVE]");
+        try out.writeAll("\n");
+        if (use_color) try out.writeAll(ansi.reset);
+        selectable_counter += 1;
+    }
+}
+
+fn renderTargetRemoveList(
+    out: *std.Io.Writer,
+    rows: []const target_rows.TargetRow,
+    idx_width: usize,
+    widths: SwitchWidths,
+    cursor: ?usize,
+    checked: []const bool,
+    use_color: bool,
+) !void {
+    const checkbox_width: usize = 3;
+    const prefix = 2 + checkbox_width + 1 + idx_width + 1;
+    var pad: usize = 0;
+    while (pad < prefix) : (pad += 1) try out.writeAll(" ");
+    try writePadded(out, "ACCOUNT", widths.email);
+    try out.writeAll("  ");
+    try writePadded(out, "PLAN", widths.plan);
+    try out.writeAll("  ");
+    try writePadded(out, "5H", widths.rate_5h);
+    try out.writeAll("  ");
+    try writePadded(out, "WEEKLY", widths.rate_week);
+    try out.writeAll("  ");
+    try writePadded(out, "LAST", widths.last);
+    try out.writeAll("\n");
+
+    var selectable_counter: usize = 0;
+    for (rows) |row| {
+        if (row.is_header) {
+            if (use_color) try out.writeAll(ansi.dim);
+            try out.writeAll("  ");
+            var pad_header: usize = 0;
+            while (pad_header < checkbox_width + 1 + idx_width + 1) : (pad_header += 1) try out.writeAll(" ");
+            try writeTruncatedPadded(out, row.account_cell, widths.email);
+            try out.writeAll("\n");
+            if (use_color) try out.writeAll(ansi.reset);
+            continue;
+        }
+
+        const is_cursor = cursor != null and cursor.? == selectable_counter;
+        const is_checked = checked[selectable_counter];
+        if (use_color) {
+            if (is_cursor) try out.writeAll(ansi.bold_green) else if (is_checked or row.is_active) try out.writeAll(ansi.green) else try out.writeAll(ansi.dim);
+        }
+        try out.writeAll(if (is_cursor) "> " else "  ");
+        try out.writeAll(if (is_checked) "[x]" else "[ ]");
+        try out.writeAll(" ");
+        try writeIndexPadded(out, selectable_counter + 1, idx_width);
+        try out.writeAll(" ");
+        try writeTruncatedPadded(out, row.account_cell, widths.email);
+        try out.writeAll("  ");
+        try writeTruncatedPadded(out, row.plan_cell, widths.plan);
+        try out.writeAll("  ");
+        try writeTruncatedPadded(out, row.rate_5h_cell, widths.rate_5h);
+        try out.writeAll("  ");
+        try writeTruncatedPadded(out, row.rate_week_cell, widths.rate_week);
+        try out.writeAll("  ");
+        try writeTruncatedPadded(out, row.last_cell, widths.last);
+        if (row.is_active) try out.writeAll("  [ACTIVE]");
+        try out.writeAll("\n");
+        if (use_color) try out.writeAll(ansi.reset);
+        selectable_counter += 1;
+    }
 }
 
 pub fn shouldUseNumberedRemoveSelector(is_windows: bool, stdin_is_tty: bool) bool {

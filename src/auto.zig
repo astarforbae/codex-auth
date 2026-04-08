@@ -31,6 +31,7 @@ pub const RuntimeState = enum { running, stopped, unknown };
 pub const Status = struct {
     enabled: bool,
     runtime: RuntimeState,
+    active_kind: ?registry.ActiveTargetKind = null,
     threshold_5h_percent: u8,
     threshold_weekly_percent: u8,
     api_usage_enabled: bool,
@@ -429,6 +430,7 @@ pub const DaemonRefreshState = struct {
         if (self.current_reg != null and current_auth_mtime == self.auth_mtime_ns) return false;
         self.auth_mtime_ns = current_auth_mtime;
         if (self.current_reg == null) return false;
+        if (registry.activeProviderProfileId(&self.current_reg.?) != null) return false;
         if (try registry.syncActiveAccountFromAuth(allocator, codex_home, &self.current_reg.?)) {
             try self.rebuildCandidateState(allocator);
             return true;
@@ -540,6 +542,7 @@ pub fn getStatus(allocator: std.mem.Allocator, codex_home: []const u8) !Status {
     return .{
         .enabled = reg.auto_switch.enabled,
         .runtime = queryRuntimeState(allocator),
+        .active_kind = reg.active_target_kind,
         .threshold_5h_percent = reg.auto_switch.threshold_5h_percent,
         .threshold_weekly_percent = reg.auto_switch.threshold_weekly_percent,
         .api_usage_enabled = reg.api.usage,
@@ -559,6 +562,17 @@ fn writeStatusWithColor(out: *std.Io.Writer, status: Status, use_color: bool) !v
 
     try out.writeAll("service: ");
     try out.writeAll(@tagName(status.runtime));
+    try out.writeAll("\n");
+
+    try out.writeAll("target: ");
+    if (status.active_kind) |kind| {
+        try out.writeAll(switch (kind) {
+            .account => "account",
+            .provider_profile => "provider",
+        });
+    } else {
+        try out.writeAll("none");
+    }
     try out.writeAll("\n");
 
     try out.writeAll("thresholds: ");

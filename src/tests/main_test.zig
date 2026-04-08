@@ -3,6 +3,7 @@ const account_api = @import("../account_api.zig");
 const auth_mod = @import("../auth.zig");
 const display_rows = @import("../display_rows.zig");
 const main_mod = @import("../main.zig");
+const provider_config = @import("../provider_config.zig");
 const registry = @import("../registry.zig");
 const usage_api = @import("../usage_api.zig");
 const bdd = @import("bdd_helpers.zig");
@@ -34,9 +35,12 @@ fn makeRegistry() registry.Registry {
         .schema_version = registry.current_schema_version,
         .active_account_key = null,
         .active_account_activated_at_ms = null,
+        .active_target_kind = null,
+        .active_target_id = null,
         .auto_switch = registry.defaultAutoSwitchConfig(),
         .api = registry.defaultApiConfig(),
         .accounts = std.ArrayList(registry.AccountRecord).empty,
+        .provider_profiles = std.ArrayList(registry.ProviderProfile).empty,
     };
 }
 
@@ -65,6 +69,28 @@ fn appendAccount(
         .last_usage = null,
         .last_usage_at = null,
         .last_local_rollout = null,
+    });
+}
+
+fn appendProviderProfile(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    profile_id: []const u8,
+    label: []const u8,
+    base_url: []const u8,
+    api_key: []const u8,
+    model: ?[]const u8,
+) !void {
+    try reg.provider_profiles.append(allocator, .{
+        .profile_id = try allocator.dupe(u8, profile_id),
+        .label = try allocator.dupe(u8, label),
+        .provider_id = try allocator.dupe(u8, profile_id),
+        .base_url = try allocator.dupe(u8, base_url),
+        .api_key = try allocator.dupe(u8, api_key),
+        .wire_api = try allocator.dupe(u8, "responses"),
+        .model = if (model) |value| try allocator.dupe(u8, value) else null,
+        .created_at = 1,
+        .last_used_at = null,
     });
 }
 
@@ -1062,6 +1088,241 @@ test "Scenario: Given no remaining accounts when reconciling after remove then a
     const active_auth_path = try registry.activeAuthPath(gpa, codex_home);
     defer gpa.free(active_auth_path);
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().openFile(active_auth_path, .{}));
+}
+
+test "Scenario: Given provider add options when handling then profile is saved" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    try main_mod.handleProviderAdd(gpa, codex_home, .{
+        .label = @constCast("openrouter"),
+        .provider_id = null,
+        .base_url = @constCast("https://openrouter.ai/api/v1"),
+        .api_key = @constCast("sk-test"),
+        .model = @constCast("gpt-5.4"),
+    });
+
+    var reg = try registry.loadRegistry(gpa, codex_home);
+    defer reg.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), reg.provider_profiles.items.len);
+    try std.testing.expectEqualStrings("openrouter", reg.provider_profiles.items[0].provider_id);
+    try std.testing.expectEqualStrings("gpt-5.4", reg.provider_profiles.items[0].model.?);
+}
+
+test "Scenario: Given provider update options when handling then profile fields are updated" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendProviderProfile(gpa, &reg, "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "sk-old", null);
+    try registry.saveRegistry(gpa, codex_home, &reg);
+
+    try main_mod.handleProviderUpdate(gpa, codex_home, .{
+        .query = @constCast("openrouter"),
+        .label = @constCast("OpenRouter EU"),
+        .provider_id = @constCast("openrouter-eu"),
+        .base_url = @constCast("https://proxy.example.com/v1"),
+        .api_key = @constCast("sk-new"),
+        .model = @constCast("gpt-5.4"),
+        .clear_model = false,
+    });
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), loaded.provider_profiles.items.len);
+    try std.testing.expectEqualStrings("openrouter-eu", loaded.provider_profiles.items[0].profile_id);
+    try std.testing.expectEqualStrings("OpenRouter EU", loaded.provider_profiles.items[0].label);
+    try std.testing.expectEqualStrings("https://proxy.example.com/v1", loaded.provider_profiles.items[0].base_url);
+    try std.testing.expectEqualStrings("sk-new", loaded.provider_profiles.items[0].api_key);
+}
+
+test "Scenario: Given active provider update with renamed id when handling then active target and managed config are refreshed" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendProviderProfile(gpa, &reg, "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "sk-old", null);
+    try registry.setActiveProviderProfile(gpa, &reg, "openrouter");
+    try registry.saveRegistry(gpa, codex_home, &reg);
+    try provider_config.applyManagedProviderProfile(gpa, codex_home, .{
+        .provider_id = "openrouter",
+        .base_url = "https://openrouter.ai/api/v1",
+        .api_key = "sk-old",
+        .wire_api = "responses",
+        .model = null,
+    });
+
+    try main_mod.handleProviderUpdate(gpa, codex_home, .{
+        .query = @constCast("openrouter"),
+        .label = @constCast("OpenRouter EU"),
+        .provider_id = @constCast("openrouter-eu"),
+        .base_url = @constCast("https://proxy.example.com/v1"),
+        .api_key = @constCast("sk-new"),
+        .model = @constCast("gpt-5.4"),
+        .clear_model = false,
+    });
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(registry.ActiveTargetKind.provider_profile, loaded.active_target_kind.?);
+    try std.testing.expectEqualStrings("openrouter-eu", loaded.active_target_id.?);
+
+    const config_path = try std.fs.path.join(gpa, &[_][]const u8{ codex_home, "config.toml" });
+    defer gpa.free(config_path);
+    const config = try std.fs.cwd().readFileAlloc(gpa, config_path, 10 * 1024 * 1024);
+    defer gpa.free(config);
+    try std.testing.expect(std.mem.indexOf(u8, config, "model_provider = \"openrouter-eu\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "base_url = \"https://proxy.example.com/v1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "api_key = \"sk-new\"") != null);
+}
+
+test "Scenario: Given active provider remove options when handling then profile is removed and managed config is cleared" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendProviderProfile(gpa, &reg, "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "sk-test", null);
+    try registry.setActiveProviderProfile(gpa, &reg, "openrouter");
+    try registry.saveRegistry(gpa, codex_home, &reg);
+    try provider_config.applyManagedProviderProfile(gpa, codex_home, .{
+        .provider_id = "openrouter",
+        .base_url = "https://openrouter.ai/api/v1",
+        .api_key = "sk-test",
+        .wire_api = "responses",
+        .model = null,
+    });
+
+    try main_mod.handleProviderRemove(gpa, codex_home, .{
+        .query = @constCast("openrouter"),
+    });
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), loaded.provider_profiles.items.len);
+    try std.testing.expect(loaded.active_target_kind == null);
+
+    const config_path = try std.fs.path.join(gpa, &[_][]const u8{ codex_home, "config.toml" });
+    defer gpa.free(config_path);
+    const config = try std.fs.cwd().readFileAlloc(gpa, config_path, 10 * 1024 * 1024);
+    defer gpa.free(config);
+    try std.testing.expect(std.mem.indexOf(u8, config, provider_config.managed_begin) == null);
+}
+
+test "Scenario: Given active provider remove with another provider remaining when handling then fallback provider becomes active" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendProviderProfile(gpa, &reg, "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "sk-old", null);
+    try appendProviderProfile(gpa, &reg, "proxy", "Proxy", "https://proxy.example.com/v1", "sk-proxy", @constCast("gpt-5.4"));
+    try registry.setActiveProviderProfile(gpa, &reg, "openrouter");
+    try registry.saveRegistry(gpa, codex_home, &reg);
+    try provider_config.applyManagedProviderProfile(gpa, codex_home, .{
+        .provider_id = "openrouter",
+        .base_url = "https://openrouter.ai/api/v1",
+        .api_key = "sk-old",
+        .wire_api = "responses",
+        .model = null,
+    });
+
+    try main_mod.handleProviderRemove(gpa, codex_home, .{
+        .query = @constCast("openrouter"),
+    });
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(registry.ActiveTargetKind.provider_profile, loaded.active_target_kind.?);
+    try std.testing.expectEqualStrings("proxy", loaded.active_target_id.?);
+
+    const config_path = try std.fs.path.join(gpa, &[_][]const u8{ codex_home, "config.toml" });
+    defer gpa.free(config_path);
+    const config = try std.fs.cwd().readFileAlloc(gpa, config_path, 10 * 1024 * 1024);
+    defer gpa.free(config);
+    try std.testing.expect(std.mem.indexOf(u8, config, "model_provider = \"proxy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "api_key = \"sk-proxy\"") != null);
+}
+
+test "Scenario: Given switch query matching provider label when handling then provider becomes active and config is rewritten" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendProviderProfile(gpa, &reg, "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "sk-test", null);
+    try registry.saveRegistry(gpa, codex_home, &reg);
+
+    try main_mod.handleSwitch(gpa, codex_home, .{
+        .query = @constCast("OpenRouter"),
+    });
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(registry.ActiveTargetKind.provider_profile, loaded.active_target_kind.?);
+    try std.testing.expectEqualStrings("openrouter", loaded.active_target_id.?);
+
+    const config_path = try std.fs.path.join(gpa, &[_][]const u8{ codex_home, "config.toml" });
+    defer gpa.free(config_path);
+    const config = try std.fs.cwd().readFileAlloc(gpa, config_path, 10 * 1024 * 1024);
+    defer gpa.free(config);
+    try std.testing.expect(std.mem.indexOf(u8, config, "model_provider = \"openrouter\"") != null);
+}
+
+test "Scenario: Given remove query matching provider when handling then unified remove path deletes provider" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendProviderProfile(gpa, &reg, "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "sk-test", null);
+    try registry.saveRegistry(gpa, codex_home, &reg);
+
+    try main_mod.handleRemove(gpa, codex_home, .{
+        .query = @constCast("openrouter"),
+        .all = false,
+    });
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), loaded.provider_profiles.items.len);
 }
 
 test "Scenario: Given newer registry schema when loading help config then default help settings are used" {

@@ -86,9 +86,12 @@ fn makeEmptyRegistry() registry.Registry {
         .schema_version = registry.current_schema_version,
         .active_account_key = null,
         .active_account_activated_at_ms = null,
+        .active_target_kind = null,
+        .active_target_id = null,
         .auto_switch = registry.defaultAutoSwitchConfig(),
         .api = registry.defaultApiConfig(),
         .accounts = std.ArrayList(registry.AccountRecord).empty,
+        .provider_profiles = std.ArrayList(registry.ProviderProfile).empty,
     };
 }
 
@@ -311,6 +314,79 @@ test "registry save/load round-trips account_name string" {
     defer loaded.deinit(gpa);
     try std.testing.expect(loaded.accounts.items[0].account_name != null);
     try std.testing.expect(std.mem.eql(u8, loaded.accounts.items[0].account_name.?, "abcd"));
+}
+
+test "Scenario: Given legacy active_account_key when loading provider profile registry then active target migrates to account" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+    try tmp.dir.writeFile(.{
+        .sub_path = "accounts/registry.json",
+        .data =
+        \\{
+        \\  "schema_version": 3,
+        \\  "active_account_key": "user-1::acct-1",
+        \\  "active_account_activated_at_ms": 123,
+        \\  "auto_switch": {
+        \\    "enabled": false,
+        \\    "threshold_5h_percent": 10,
+        \\    "threshold_weekly_percent": 5
+        \\  },
+        \\  "api": {
+        \\    "usage": true,
+        \\    "account": true,
+        \\    "list_refresh_all": false
+        \\  },
+        \\  "accounts": []
+        \\}
+        ,
+    });
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+
+    try std.testing.expectEqual(registry.ActiveTargetKind.account, loaded.active_target_kind.?);
+    try std.testing.expectEqualStrings("user-1::acct-1", loaded.active_target_id.?);
+    try std.testing.expectEqualStrings("user-1::acct-1", registry.activeAccountKey(&loaded).?);
+}
+
+test "Scenario: Given provider profile registry when saving and loading then profiles round-trip" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeEmptyRegistry();
+    defer reg.deinit(gpa);
+    reg.active_target_kind = .provider_profile;
+    reg.active_target_id = try gpa.dupe(u8, "openrouter");
+    try reg.provider_profiles.append(gpa, .{
+        .profile_id = try gpa.dupe(u8, "openrouter"),
+        .label = try gpa.dupe(u8, "OpenRouter"),
+        .provider_id = try gpa.dupe(u8, "openrouter"),
+        .base_url = try gpa.dupe(u8, "https://openrouter.ai/api/v1"),
+        .api_key = try gpa.dupe(u8, "sk-test"),
+        .wire_api = try gpa.dupe(u8, "responses"),
+        .model = try gpa.dupe(u8, "gpt-5.4"),
+        .created_at = 42,
+        .last_used_at = 99,
+    });
+    try registry.saveRegistry(gpa, codex_home, &reg);
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(registry.ActiveTargetKind.provider_profile, loaded.active_target_kind.?);
+    try std.testing.expectEqualStrings("openrouter", loaded.active_target_id.?);
+    try std.testing.expectEqual(@as(usize, 1), loaded.provider_profiles.items.len);
+    try std.testing.expectEqualStrings("OpenRouter", loaded.provider_profiles.items[0].label);
+    try std.testing.expectEqualStrings("gpt-5.4", loaded.provider_profiles.items[0].model.?);
 }
 
 test "applyAccountNamesForUser preserves existing account_name when replacement allocation fails" {

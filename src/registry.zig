@@ -13,6 +13,8 @@ pub const default_auto_switch_threshold_5h_percent: u8 = 10;
 pub const default_auto_switch_threshold_weekly_percent: u8 = 5;
 pub const account_name_refresh_lock_file_name = "account-name-refresh.lock";
 
+pub const ActiveTargetKind = enum { account, provider_profile };
+
 fn normalizeEmailAlloc(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
     var buf = try allocator.alloc(u8, email.len);
     for (email, 0..) |ch, i| {
@@ -80,6 +82,18 @@ pub const AccountRecord = struct {
     last_local_rollout: ?RolloutSignature,
 };
 
+pub const ProviderProfile = struct {
+    profile_id: []u8,
+    label: []u8,
+    provider_id: []u8,
+    base_url: []u8,
+    api_key: []u8,
+    wire_api: []u8,
+    model: ?[]u8,
+    created_at: i64,
+    last_used_at: ?i64,
+};
+
 pub fn resolvePlan(rec: *const AccountRecord) ?PlanType {
     if (rec.plan) |p| return p;
     if (rec.last_usage) |u| return u.plan_type;
@@ -90,16 +104,24 @@ pub const Registry = struct {
     schema_version: u32,
     active_account_key: ?[]u8,
     active_account_activated_at_ms: ?i64,
+    active_target_kind: ?ActiveTargetKind,
+    active_target_id: ?[]u8,
     auto_switch: AutoSwitchConfig,
     api: ApiConfig,
     accounts: std.ArrayList(AccountRecord),
+    provider_profiles: std.ArrayList(ProviderProfile),
 
     pub fn deinit(self: *Registry, allocator: std.mem.Allocator) void {
         for (self.accounts.items) |*rec| {
             freeAccountRecord(allocator, rec);
         }
+        for (self.provider_profiles.items) |*profile| {
+            freeProviderProfile(allocator, profile);
+        }
         if (self.active_account_key) |k| allocator.free(k);
+        if (self.active_target_id) |id| allocator.free(id);
         self.accounts.deinit(allocator);
+        self.provider_profiles.deinit(allocator);
     }
 };
 
@@ -122,6 +144,16 @@ fn freeAccountRecord(allocator: std.mem.Allocator, rec: *const AccountRecord) vo
     if (rec.last_usage) |*u| {
         freeRateLimitSnapshot(allocator, u);
     }
+}
+
+fn freeProviderProfile(allocator: std.mem.Allocator, profile: *const ProviderProfile) void {
+    allocator.free(profile.profile_id);
+    allocator.free(profile.label);
+    allocator.free(profile.provider_id);
+    allocator.free(profile.base_url);
+    allocator.free(profile.api_key);
+    allocator.free(profile.wire_api);
+    if (profile.model) |model| allocator.free(model);
 }
 
 pub fn freeRateLimitSnapshot(allocator: std.mem.Allocator, snapshot: *const RateLimitSnapshot) void {
@@ -1450,6 +1482,14 @@ fn sortAccountsByEmail(reg: *Registry) void {
     std.sort.insertion(AccountRecord, reg.accounts.items, {}, accountRecordLessThan);
 }
 
+fn providerProfileLessThan(_: void, a: ProviderProfile, b: ProviderProfile) bool {
+    return std.mem.lessThan(u8, a.profile_id, b.profile_id);
+}
+
+fn sortProviderProfiles(reg: *Registry) void {
+    std.sort.insertion(ProviderProfile, reg.provider_profiles.items, {}, providerProfileLessThan);
+}
+
 fn syncCurrentAuthBestEffort(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -1515,15 +1555,44 @@ pub fn findAccountIndexByAccountKey(reg: *Registry, account_key: []const u8) ?us
     return null;
 }
 
+pub fn activeAccountKey(reg: *const Registry) ?[]const u8 {
+    if (reg.active_target_kind) |kind| {
+        switch (kind) {
+            .account => return reg.active_target_id orelse reg.active_account_key,
+            .provider_profile => return null,
+        }
+    }
+    return reg.active_account_key;
+}
+
+pub fn activeProviderProfileId(reg: *const Registry) ?[]const u8 {
+    if (reg.active_target_kind) |kind| {
+        if (kind == .provider_profile) return reg.active_target_id;
+    }
+    return null;
+}
+
 pub fn setActiveAccountKey(allocator: std.mem.Allocator, reg: *Registry, account_key: []const u8) !void {
-    if (reg.active_account_key) |k| {
-        if (std.mem.eql(u8, k, account_key)) return;
+    if (reg.active_target_kind) |kind| {
+        if (kind == .account and reg.active_target_id != null and reg.active_account_key != null) {
+            if (std.mem.eql(u8, reg.active_target_id.?, account_key) and std.mem.eql(u8, reg.active_account_key.?, account_key)) {
+                return;
+            }
+        }
     }
     const new_active_account_key = try allocator.dupe(u8, account_key);
+    errdefer allocator.free(new_active_account_key);
+    const new_active_target_id = try allocator.dupe(u8, account_key);
+    errdefer allocator.free(new_active_target_id);
     if (reg.active_account_key) |k| {
         allocator.free(k);
     }
+    if (reg.active_target_id) |id| {
+        allocator.free(id);
+    }
     reg.active_account_key = new_active_account_key;
+    reg.active_target_kind = .account;
+    reg.active_target_id = new_active_target_id;
     reg.active_account_activated_at_ms = std.time.milliTimestamp();
     const now = std.time.timestamp();
     for (reg.accounts.items) |*rec| {
@@ -1532,6 +1601,26 @@ pub fn setActiveAccountKey(allocator: std.mem.Allocator, reg: *Registry, account
             break;
         }
     }
+}
+
+pub fn setActiveProviderProfile(allocator: std.mem.Allocator, reg: *Registry, profile_id: []const u8) !void {
+    if (reg.active_target_kind) |kind| {
+        if (kind == .provider_profile and reg.active_target_id != null and reg.active_account_key == null) {
+            if (std.mem.eql(u8, reg.active_target_id.?, profile_id)) return;
+        }
+    }
+    const new_active_target_id = try allocator.dupe(u8, profile_id);
+    errdefer allocator.free(new_active_target_id);
+    if (reg.active_account_key) |k| {
+        allocator.free(k);
+        reg.active_account_key = null;
+    }
+    if (reg.active_target_id) |id| {
+        allocator.free(id);
+    }
+    reg.active_target_kind = .provider_profile;
+    reg.active_target_id = new_active_target_id;
+    reg.active_account_activated_at_ms = null;
 }
 
 pub fn updateUsage(allocator: std.mem.Allocator, reg: *Registry, account_key: []const u8, snapshot: RateLimitSnapshot) void {
@@ -1645,7 +1734,7 @@ pub fn removeAccounts(allocator: std.mem.Allocator, codex_home: []const u8, reg:
 
     try deleteRemovedAccountBackups(allocator, codex_home, reg, removed);
 
-    if (reg.active_account_key) |key| {
+    if (activeAccountKey(reg)) |key| {
         var active_removed = false;
         for (reg.accounts.items, 0..) |rec, i| {
             if (removed[i] and std.mem.eql(u8, rec.account_key, key)) {
@@ -1654,8 +1743,15 @@ pub fn removeAccounts(allocator: std.mem.Allocator, codex_home: []const u8, reg:
             }
         }
         if (active_removed) {
-            allocator.free(key);
-            reg.active_account_key = null;
+            if (reg.active_account_key) |active_key| {
+                allocator.free(active_key);
+                reg.active_account_key = null;
+            }
+            if (reg.active_target_id) |id| {
+                allocator.free(id);
+                reg.active_target_id = null;
+            }
+            reg.active_target_kind = null;
             reg.active_account_activated_at_ms = null;
         }
     }
@@ -1817,7 +1913,7 @@ pub fn shouldFetchTeamAccountNamesForUser(reg: *const Registry, chatgpt_user_id:
 }
 
 pub fn activeChatgptUserId(reg: *Registry) ?[]const u8 {
-    const active_account_key = reg.active_account_key orelse return null;
+    const active_account_key = activeAccountKey(reg) orelse return null;
     const idx = findAccountIndexByAccountKey(reg, active_account_key) orelse return null;
     return reg.accounts.items[idx].chatgpt_user_id;
 }
@@ -1964,6 +2060,58 @@ pub fn upsertAccount(allocator: std.mem.Allocator, reg: *Registry, record: Accou
     try reg.accounts.append(allocator, record);
 }
 
+pub fn findProviderProfileIndexById(reg: *Registry, profile_id: []const u8) ?usize {
+    for (reg.provider_profiles.items, 0..) |profile, i| {
+        if (std.mem.eql(u8, profile.profile_id, profile_id)) return i;
+    }
+    return null;
+}
+
+pub fn firstProviderProfileId(reg: *const Registry) ?[]const u8 {
+    if (reg.provider_profiles.items.len == 0) return null;
+    return reg.provider_profiles.items[0].profile_id;
+}
+
+pub fn upsertProviderProfile(allocator: std.mem.Allocator, reg: *Registry, profile: ProviderProfile) !void {
+    var owned_profile = profile;
+    var profile_owned = true;
+    errdefer if (profile_owned) freeProviderProfile(allocator, &owned_profile);
+
+    if (findProviderProfileIndexById(reg, owned_profile.profile_id)) |idx| {
+        const existing = &reg.provider_profiles.items[idx];
+        const existing_created_at = existing.created_at;
+        const existing_last_used_at = existing.last_used_at;
+        owned_profile.created_at = existing_created_at;
+        if (owned_profile.last_used_at == null) {
+            owned_profile.last_used_at = existing_last_used_at;
+        }
+        freeProviderProfile(allocator, existing);
+        existing.* = owned_profile;
+        profile_owned = false;
+        return;
+    }
+
+    try reg.provider_profiles.append(allocator, owned_profile);
+    profile_owned = false;
+    sortProviderProfiles(reg);
+}
+
+pub fn removeProviderProfileById(allocator: std.mem.Allocator, reg: *Registry, profile_id: []const u8) bool {
+    const idx = findProviderProfileIndexById(reg, profile_id) orelse return false;
+    if (reg.active_target_kind) |kind| {
+        if (kind == .provider_profile and reg.active_target_id != null) {
+            if (std.mem.eql(u8, reg.active_target_id.?, profile_id)) {
+                allocator.free(reg.active_target_id.?);
+                reg.active_target_id = null;
+                reg.active_target_kind = null;
+            }
+        }
+    }
+    const removed = reg.provider_profiles.orderedRemove(idx);
+    freeProviderProfile(allocator, &removed);
+    return true;
+}
+
 const LegacyAccountRecord = struct {
     email: []u8,
     alias: []u8,
@@ -1986,9 +2134,12 @@ fn defaultRegistry() Registry {
         .schema_version = current_schema_version,
         .active_account_key = null,
         .active_account_activated_at_ms = null,
+        .active_target_kind = null,
+        .active_target_id = null,
         .auto_switch = defaultAutoSwitchConfig(),
         .api = defaultApiConfig(),
         .accounts = std.ArrayList(AccountRecord).empty,
+        .provider_profiles = std.ArrayList(ProviderProfile).empty,
     };
 }
 
@@ -2226,6 +2377,111 @@ fn migrateLegacyRecord(
     }
 }
 
+fn parseActiveTargetKind(value: std.json.Value) ?ActiveTargetKind {
+    const text = switch (value) {
+        .string => |s| s,
+        else => return null,
+    };
+    if (std.mem.eql(u8, text, "account")) return .account;
+    if (std.mem.eql(u8, text, "provider_profile")) return .provider_profile;
+    return null;
+}
+
+fn parseProviderProfile(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !ProviderProfile {
+    const profile_id = switch (obj.get("profile_id") orelse return error.MissingProviderProfileId) {
+        .string => |s| s,
+        else => return error.MissingProviderProfileId,
+    };
+    const label = switch (obj.get("label") orelse return error.MissingProviderProfileLabel) {
+        .string => |s| s,
+        else => return error.MissingProviderProfileLabel,
+    };
+    const provider_id = switch (obj.get("provider_id") orelse return error.MissingProviderProfileProviderId) {
+        .string => |s| s,
+        else => return error.MissingProviderProfileProviderId,
+    };
+    const base_url = switch (obj.get("base_url") orelse return error.MissingProviderProfileBaseUrl) {
+        .string => |s| s,
+        else => return error.MissingProviderProfileBaseUrl,
+    };
+    const api_key = switch (obj.get("api_key") orelse return error.MissingProviderProfileApiKey) {
+        .string => |s| s,
+        else => return error.MissingProviderProfileApiKey,
+    };
+    const wire_api = switch (obj.get("wire_api") orelse return error.MissingProviderProfileWireApi) {
+        .string => |s| s,
+        else => return error.MissingProviderProfileWireApi,
+    };
+    return .{
+        .profile_id = try allocator.dupe(u8, profile_id),
+        .label = try allocator.dupe(u8, label),
+        .provider_id = try allocator.dupe(u8, provider_id),
+        .base_url = try allocator.dupe(u8, base_url),
+        .api_key = try allocator.dupe(u8, api_key),
+        .wire_api = try allocator.dupe(u8, wire_api),
+        .model = try parseOptionalStoredStringAlloc(allocator, obj.get("model")),
+        .created_at = readInt(obj.get("created_at")) orelse std.time.timestamp(),
+        .last_used_at = readInt(obj.get("last_used_at")),
+    };
+}
+
+fn normalizeActiveTargetState(allocator: std.mem.Allocator, reg: *Registry) !void {
+    if (reg.active_target_kind) |kind| {
+        switch (kind) {
+            .account => {
+                if (reg.active_target_id) |id| {
+                    if (reg.active_account_key) |key| {
+                        if (!std.mem.eql(u8, key, id)) {
+                            allocator.free(key);
+                            reg.active_account_key = try allocator.dupe(u8, id);
+                        }
+                    } else {
+                        reg.active_account_key = try allocator.dupe(u8, id);
+                    }
+                } else if (reg.active_account_key) |key| {
+                    reg.active_target_id = try allocator.dupe(u8, key);
+                }
+                if (reg.active_account_key == null) {
+                    if (reg.active_target_id) |id| {
+                        reg.active_account_key = try allocator.dupe(u8, id);
+                    }
+                }
+                if (reg.active_account_key == null) {
+                    reg.active_target_kind = null;
+                    reg.active_account_activated_at_ms = null;
+                } else if (reg.active_account_activated_at_ms == null) {
+                    reg.active_account_activated_at_ms = 0;
+                }
+            },
+            .provider_profile => {
+                if (reg.active_account_key) |key| {
+                    allocator.free(key);
+                    reg.active_account_key = null;
+                }
+                reg.active_account_activated_at_ms = null;
+            },
+        }
+    } else {
+        if (reg.active_target_id) |id| {
+            reg.active_target_kind = .account;
+            if (reg.active_account_key) |key| {
+                if (!std.mem.eql(u8, key, id)) {
+                    allocator.free(key);
+                    reg.active_account_key = try allocator.dupe(u8, id);
+                }
+            } else {
+                reg.active_account_key = try allocator.dupe(u8, id);
+            }
+        } else if (reg.active_account_key) |key| {
+            reg.active_target_kind = .account;
+            reg.active_target_id = try allocator.dupe(u8, key);
+        }
+        if (reg.active_account_key != null and reg.active_account_activated_at_ms == null) {
+            reg.active_account_activated_at_ms = 0;
+        }
+    }
+}
+
 fn loadLegacyRegistryV2(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -2246,9 +2502,6 @@ fn loadLegacyRegistryV2(
             .string => |s| reg.active_account_key = try allocator.dupe(u8, s),
             else => {},
         }
-    }
-    if (reg.active_account_key != null) {
-        reg.active_account_activated_at_ms = 0;
     }
     if (root_obj.get("active_email")) |v| {
         switch (v) {
@@ -2287,6 +2540,8 @@ fn loadLegacyRegistryV2(
         try migrateLegacyRecord(allocator, codex_home, &reg, legacy_active_email, legacy);
     }
 
+    try normalizeActiveTargetState(allocator, &reg);
+
     return reg;
 }
 
@@ -2296,6 +2551,22 @@ fn loadCurrentRegistry(allocator: std.mem.Allocator, root_obj: std.json.ObjectMa
     var reg = defaultRegistry();
     errdefer reg.deinit(allocator);
 
+    if (root_obj.get("active_target_kind")) |v| {
+        switch (v) {
+            .string => {
+                if (parseActiveTargetKind(v)) |kind| {
+                    reg.active_target_kind = kind;
+                }
+            },
+            else => {},
+        }
+    }
+    if (root_obj.get("active_target_id")) |v| {
+        switch (v) {
+            .string => |s| reg.active_target_id = try allocator.dupe(u8, s),
+            else => {},
+        }
+    }
     if (root_obj.get("active_account_key")) |v| {
         switch (v) {
             .string => |s| reg.active_account_key = try allocator.dupe(u8, s),
@@ -2322,6 +2593,20 @@ fn loadCurrentRegistry(allocator: std.mem.Allocator, root_obj: std.json.ObjectMa
             else => {},
         }
     }
+    if (root_obj.get("provider_profiles")) |v| {
+        switch (v) {
+            .array => |arr| {
+                for (arr.items) |item| {
+                    const obj = switch (item) {
+                        .object => |o| o,
+                        else => continue,
+                    };
+                    try upsertProviderProfile(allocator, &reg, try parseProviderProfile(allocator, obj));
+                }
+            },
+            else => {},
+        }
+    }
 
     if (root_obj.get("auto_switch")) |v| {
         parseAutoSwitch(allocator, &reg.auto_switch, v);
@@ -2329,6 +2614,8 @@ fn loadCurrentRegistry(allocator: std.mem.Allocator, root_obj: std.json.ObjectMa
     if (root_obj.get("api")) |v| {
         parseApiConfig(&reg.api, v);
     }
+
+    try normalizeActiveTargetState(allocator, &reg);
 
     return reg;
 }
@@ -2356,7 +2643,18 @@ fn currentLayoutNeedsRewrite(root_obj: std.json.ObjectMap) bool {
     } else {
         return true;
     }
-    return root_obj.get("active_account_key") != null and root_obj.get("active_account_activated_at_ms") == null;
+    if (root_obj.get("active_account_key") == null) return true;
+    if (root_obj.get("active_target_kind") == null) return true;
+    if (root_obj.get("active_target_id") == null) return true;
+    if (root_obj.get("provider_profiles") == null) return true;
+    if (root_obj.get("active_target_kind")) |v| {
+        switch (v) {
+            .string => if (parseActiveTargetKind(v) == null) return true,
+            .null => {},
+            else => return true,
+        }
+    }
+    return false;
 }
 
 fn detectSchemaVersion(root_obj: std.json.ObjectMap) u32 {
@@ -2476,16 +2774,21 @@ fn writeRegistryFileAtomic(path: []const u8, data: []const u8) !void {
 
 pub fn saveRegistry(allocator: std.mem.Allocator, codex_home: []const u8, reg: *Registry) !void {
     reg.schema_version = current_schema_version;
+    try normalizeActiveTargetState(allocator, reg);
+    sortProviderProfiles(reg);
     try ensureAccountsDir(allocator, codex_home);
     const path = try registryPath(allocator, codex_home);
     defer allocator.free(path);
 
     const out = RegistryOut{
         .schema_version = current_schema_version,
-        .active_account_key = reg.active_account_key,
+        .active_account_key = activeAccountKey(reg),
         .active_account_activated_at_ms = reg.active_account_activated_at_ms,
+        .active_target_kind = reg.active_target_kind,
+        .active_target_id = reg.active_target_id,
         .auto_switch = reg.auto_switch,
         .api = reg.api,
+        .provider_profiles = reg.provider_profiles.items,
         .accounts = reg.accounts.items,
     };
     var aw: std.Io.Writer.Allocating = .init(allocator);
@@ -2506,8 +2809,11 @@ const RegistryOut = struct {
     schema_version: u32,
     active_account_key: ?[]const u8,
     active_account_activated_at_ms: ?i64,
+    active_target_kind: ?ActiveTargetKind,
+    active_target_id: ?[]const u8,
     auto_switch: AutoSwitchConfig,
     api: ApiConfig,
+    provider_profiles: []const ProviderProfile,
     accounts: []const AccountRecord,
 };
 

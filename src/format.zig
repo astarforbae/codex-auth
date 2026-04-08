@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const display_rows = @import("display_rows.zig");
 const registry = @import("registry.zig");
 const io_util = @import("io_util.zig");
+const target_rows = @import("target_rows.zig");
 const timefmt = @import("timefmt.zig");
 const c = @cImport({
     @cInclude("time.h");
@@ -39,32 +39,20 @@ fn printAccountsTable(reg: *registry.Registry) !void {
         headers[3].len,
         headers[4].len,
     };
-    const now = std.time.timestamp();
     const prefix_len: usize = 2;
     const sep_len: usize = 2;
 
-    var display = try display_rows.buildDisplayRows(std.heap.page_allocator, reg, null);
-    defer display.deinit(std.heap.page_allocator);
+    var rows = try target_rows.buildTargetRows(std.heap.page_allocator, reg, null);
+    defer rows.deinit(std.heap.page_allocator);
 
-    for (display.rows) |row| {
+    for (rows.rows) |row| {
         const indent: usize = @as(usize, row.depth) * 2;
         widths[0] = @max(widths[0], row.account_cell.len + indent);
-        if (row.account_index) |account_idx| {
-            const rec = reg.accounts.items[account_idx];
-            const plan = planDisplay(&rec, "-");
-            const rate_5h = resolveRateWindow(rec.last_usage, 300, true);
-            const rate_week = resolveRateWindow(rec.last_usage, 10080, false);
-            const rate_5h_str = try formatRateLimitFullAlloc(rate_5h);
-            defer std.heap.page_allocator.free(rate_5h_str);
-            const rate_week_str = try formatRateLimitFullAlloc(rate_week);
-            defer std.heap.page_allocator.free(rate_week_str);
-            const last_str = try timefmt.formatRelativeTimeOrDashAlloc(std.heap.page_allocator, rec.last_usage_at, now);
-            defer std.heap.page_allocator.free(last_str);
-
-            widths[1] = @max(widths[1], plan.len);
-            widths[2] = @max(widths[2], rate_5h_str.len);
-            widths[3] = @max(widths[3], rate_week_str.len);
-            widths[4] = @max(widths[4], last_str.len);
+        if (!row.is_header) {
+            widths[1] = @max(widths[1], row.plan_cell.len);
+            widths[2] = @max(widths[2], row.rate_5h_cell.len);
+            widths[3] = @max(widths[3], row.rate_week_cell.len);
+            widths[4] = @max(widths[4], row.last_cell.len);
         }
     }
 
@@ -102,29 +90,19 @@ fn printAccountsTable(reg: *registry.Registry) !void {
     try out.writeAll("\n");
     if (use_color) try out.writeAll(ansi.reset);
 
-    for (display.rows) |row| {
-        if (row.account_index) |account_idx| {
-            const rec = reg.accounts.items[account_idx];
-            const plan = planDisplay(&rec, "-");
-            const rate_5h = resolveRateWindow(rec.last_usage, 300, true);
-            const rate_week = resolveRateWindow(rec.last_usage, 10080, false);
-            const rate_5h_str = try formatRateLimitUiAlloc(rate_5h, widths[2]);
-            defer std.heap.page_allocator.free(rate_5h_str);
-            const rate_week_str = try formatRateLimitUiAlloc(rate_week, widths[3]);
-            defer std.heap.page_allocator.free(rate_week_str);
-            const last = try timefmt.formatRelativeTimeOrDashAlloc(std.heap.page_allocator, rec.last_usage_at, now);
-            defer std.heap.page_allocator.free(last);
+    for (rows.rows) |row| {
+        if (!row.is_header) {
             const indent: usize = @as(usize, row.depth) * 2;
             const indent_to_print: usize = @min(indent, widths[0]);
             const account_cell = try truncateAlloc(row.account_cell, widths[0] - indent_to_print);
             defer std.heap.page_allocator.free(account_cell);
-            const plan_cell = try truncateAlloc(plan, widths[1]);
+            const plan_cell = try truncateAlloc(row.plan_cell, widths[1]);
             defer std.heap.page_allocator.free(plan_cell);
-            const rate_5h_cell = try truncateAlloc(rate_5h_str, widths[2]);
+            const rate_5h_cell = try truncateAlloc(row.rate_5h_cell, widths[2]);
             defer std.heap.page_allocator.free(rate_5h_cell);
-            const rate_week_cell = try truncateAlloc(rate_week_str, widths[3]);
+            const rate_week_cell = try truncateAlloc(row.rate_week_cell, widths[3]);
             defer std.heap.page_allocator.free(rate_week_cell);
-            const last_cell = try truncateAlloc(last, widths[4]);
+            const last_cell = try truncateAlloc(row.last_cell, widths[4]);
             defer std.heap.page_allocator.free(last_cell);
             if (use_color) {
                 if (row.is_active) {

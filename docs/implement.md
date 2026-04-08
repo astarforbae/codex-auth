@@ -125,6 +125,8 @@ This document describes how `codex-auth` stores accounts, synchronizes auth file
 
 Each command (`list`, `switch`, `remove`) runs `syncActiveAccountFromAuth` before doing its main work. This is the mechanism that prevents stale refresh tokens when `auth.json` is updated by Codex.
 
+Provider profiles are the exception: when the active target is a provider profile, foreground commands and the background watcher skip `auth.json` sync so a stale ChatGPT snapshot cannot overwrite provider-active state.
+
 The sync flow is:
 
 1. Read `~/.codex/auth.json` and parse email/plan/auth mode.
@@ -145,31 +147,69 @@ Important limits:
 - Foreground commands sync `auth.json` strictly by `record_key`; there is no alternate key or “active” heuristic.
 - When background auto-switching is enabled, a background worker keeps checking rollout usage and can switch accounts without a foreground `codex-auth` command.
 
-## Switching Accounts
+## Provider Profiles
+
+Provider profiles are stored alongside accounts in `registry.json`, but they are activated through `~/.codex/config.toml` instead of `~/.codex/auth.json`.
+
+Each provider profile stores:
+
+- `profile_id`
+- `label`
+- `provider_id`
+- `base_url`
+- `api_key`
+- `wire_api`
+- optional `model`
+
+When a provider profile becomes active, `codex-auth` writes a managed block to `~/.codex/config.toml`:
+
+- top-level `model_provider = "<provider_id>"`
+- `[model_providers."<provider_id>"]`
+- `base_url`
+- `api_key`
+- `wire_api`
+- optional `model`
+
+That managed block is delimited by:
+
+- `# BEGIN codex-auth managed provider`
+- `# END codex-auth managed provider`
+
+Unrelated `config.toml` content is preserved.
+
+## Switching Targets
 
 `switch` supports two modes:
 
 - Interactive: `codex-auth switch`
 - Non-interactive: `codex-auth switch <query>`
 
-For non-interactive switching, the target account is matched case-insensitively by:
+For non-interactive switching, the target is matched case-insensitively by:
 
-- alias fragment
-- email fragment
+- account alias fragment
+- account email fragment
+- provider profile label fragment
+- provider `profile_id` / `provider_id` fragment
 
-If multiple accounts match, interactive selection is shown. In the switch picker, `q` quits without switching.
+If multiple targets match, interactive selection is shown. In the switch picker, `q` quits without switching.
 
 When switching:
 
-1. `auth.json` is backed up if its contents would change.
-2. The selected account’s `accounts/<account file key>.auth.json` is copied to `~/.codex/auth.json`.
-3. The registry’s `active_account_key` is updated to that account’s `record_key`.
+1. If the selected target is an account:
+   - `auth.json` is backed up if its contents would change.
+   - the selected account snapshot is copied to `~/.codex/auth.json`
+   - the managed provider block is removed from `~/.codex/config.toml`
+2. If the selected target is a provider profile:
+   - `~/.codex/auth.json` is left untouched
+   - the managed provider block in `~/.codex/config.toml` is rewritten from the selected provider profile
+   - `last_used_at` is updated for that provider profile
+3. The registry’s active target state is updated through `active_target_kind` + `active_target_id`.
 
 The switch command refreshes the current active account's usage once before rendering account choices, so the picker does not show stale data for the currently selected account. It does not refresh the newly selected account after the switch completes.
 
 Grouped account-name metadata refresh, when needed, is scheduled after the switch has already been saved so the command can return immediately; see [docs/api-refresh.md](./api-refresh.md).
 
-## Removing Accounts
+## Removing Targets
 
 `remove` now supports three foreground modes:
 
@@ -179,22 +219,26 @@ Grouped account-name metadata refresh, when needed, is scheduled after the switc
 
 For query-driven removal, the target query is matched case-insensitively by:
 
-- alias fragment
-- email fragment
+- account alias fragment
+- account email fragment
+- provider profile label fragment
+- provider `profile_id` / `provider_id` fragment
 
-If no accounts match, the command prints an error and exits non-zero.
-If exactly one account matches, it is removed immediately.
-If multiple accounts match in a TTY session, the command prints the matched account labels using the same display grouping as `list` and asks for confirmation with `Confirm delete? [y/N]:`; only `y` or `Y` proceeds.
-If multiple accounts match and stdin is not a TTY, the command exits non-zero instead of reading the pipe as confirmation input; the user must refine the query or rerun it interactively.
+If no targets match, the command prints an error and exits non-zero.
+If exactly one target matches, it is removed immediately.
+If multiple targets match in a TTY session, the command prints the matched target labels using the same display grouping as `list` and asks for confirmation with `Confirm delete? [y/N]:`; only `y` or `Y` proceeds.
+If multiple targets match and stdin is not a TTY, the command exits non-zero instead of reading the pipe as confirmation input; the user must refine the query or rerun it interactively.
 
 When an account is removed, `codex-auth` deletes both:
 
 - the account snapshot `accounts/<account file key>.auth.json`
 - any parseable `accounts/auth.json.bak.*` backup files whose auth `record_key` matches the removed account
 
+When a provider profile is removed, only the registry entry is deleted.
+
 Malformed or non-parseable `auth.json.bak.*` files are left in place for manual cleanup or `codex-auth clean`.
 
-If the removed account was the active one:
+If the removed active target was an account:
 
 - when other accounts still remain, `codex-auth` activates the remaining account with the best current usage score
 - if `~/.codex/auth.json` is missing and another account remains, `remove` recreates it from the replacement account snapshot
@@ -202,10 +246,16 @@ If the removed account was the active one:
 - when no accounts remain and the current active auth file matches the removed active account, `codex-auth` deletes `~/.codex/auth.json`
 - if the current `~/.codex/auth.json` is malformed, unsyncable, or otherwise does not match the removed active account, `remove` leaves that file untouched
 
-For `remove --all`, the command clears all accounts tracked in `registry.json` and deletes any matching managed snapshots/backups. If the current `~/.codex/auth.json` is syncable and its `record_key` matches one of those tracked accounts, `remove --all` deletes it even when `active_account_key` is null or stale. If the current `~/.codex/auth.json` is malformed, unsyncable, or otherwise cannot be identified as one of those tracked accounts, `remove --all` leaves that file untouched.
+If the removed active target was a provider profile:
+
+- if any accounts remain, `remove` promotes the best remaining account and clears the managed provider block
+- otherwise, if any provider profiles remain, `remove` promotes the first remaining provider profile and rewrites the managed provider block
+- otherwise, the managed provider block is removed from `~/.codex/config.toml`
+
+For `remove --all`, the command clears all accounts and provider profiles tracked in `registry.json`, deletes any matching managed account snapshots/backups, and removes the managed provider block. If the current `~/.codex/auth.json` is syncable and its `record_key` matches one of the tracked accounts, `remove --all` deletes it even when `active_account_key` is null or stale. If the current `~/.codex/auth.json` is malformed, unsyncable, or otherwise cannot be identified as one of those tracked accounts, `remove --all` leaves that file untouched.
 During remove reconciliation, a dangling `active_account_key` is treated the same as an unset active account so the command can promote a remaining account or finish clearing `~/.codex/auth.json`.
 
-After a successful deletion, stdout prints `Removed N account(s): ...` using the removed account emails in removal order.
+After a successful deletion, stdout prints `Removed N target(s): ...` using the removed account/provider labels in removal order.
 
 When `remove` is run without a query and stdin is not a TTY, the command falls back to the numbered selector and accepts only strict numeric selections like `1 2` or `1,2`; other piped input is rejected.
 
@@ -288,6 +338,7 @@ Latest rollout `.jsonl` rate limit record shape (from an `event_msg` + `token_co
 
 - Default list table columns: `ACCOUNT`, `PLAN`, `5H USAGE`, `WEEKLY`, `LAST ACTIVITY`.
 - Human-readable `list`, `switch`, and `remove` group records by email when the same email owns multiple account snapshots.
+- Provider profiles render in the same table under a `provider profiles` header.
 - In grouped output:
   - the top-level email line is a header only
   - child rows are the selectable accounts
@@ -295,6 +346,7 @@ Latest rollout `.jsonl` rate limit record shape (from an `event_msg` + `token_co
   - otherwise the child label is the plan name (`team`, `plus`, etc.)
   - repeated plans under the same email are rendered as stable numbered labels like `team #1`, `team #2`
 - Single-account emails still render as one flat row; when an alias is set, that row shows `(alias)email`.
+- Provider profile rows use `PLAN=provider`, `5H USAGE=-`, `WEEKLY=-`, and `LAST ACTIVITY` from `last_used_at`.
 - The switch/remove UI shows `ACCOUNT`, `PLAN`, `5H`, `WEEKLY`, `LAST`.
 - Usage limit cells show remaining percent plus reset time: `NN% (HH:MM)` for same-day resets, or `NN% (HH:MM on D Mon)` when the reset is on a different day.
 - `LAST ACTIVITY` is derived from `last_usage_at` and rendered as a relative time like `Now` or `2m ago`.

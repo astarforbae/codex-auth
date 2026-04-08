@@ -1624,6 +1624,25 @@ test "Scenario: Given api usage mode when rendering status body then risk warnin
     try std.testing.expect(std.mem.indexOf(u8, output, "`codex-auth config api disable`") == null);
 }
 
+test "Scenario: Given provider target when rendering status then target line shows provider" {
+    const gpa = std.testing.allocator;
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    try auto.writeStatus(&aw.writer, .{
+        .enabled = true,
+        .runtime = .running,
+        .active_kind = .provider_profile,
+        .threshold_5h_percent = 12,
+        .threshold_weekly_percent = 8,
+        .api_usage_enabled = true,
+        .api_account_enabled = false,
+    });
+
+    const output = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "target: provider") != null);
+}
+
 test "Scenario: Given missing sessions dir when refreshing active usage then it is skipped without error" {
     const gpa = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
