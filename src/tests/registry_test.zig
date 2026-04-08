@@ -400,6 +400,72 @@ test "registry save/load round-trips api.account false" {
     try std.testing.expect(!loaded.api.account);
 }
 
+test "registry save/load round-trips api.list_refresh_all true" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeEmptyRegistry();
+    defer reg.deinit(gpa);
+    reg.api.list_refresh_all = true;
+
+    const rec = try makeAccountRecord(gpa, "a@b.com", "work", .pro, .chatgpt, 1);
+    try reg.accounts.append(gpa, rec);
+    try registry.saveRegistry(gpa, codex_home, &reg);
+
+    const registry_path = try std.fs.path.join(gpa, &[_][]const u8{ codex_home, "accounts", "registry.json" });
+    defer gpa.free(registry_path);
+    const saved = try bdd.readFileAlloc(gpa, registry_path);
+    defer gpa.free(saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"list_refresh_all\": true") != null);
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expect(loaded.api.usage);
+    try std.testing.expect(loaded.api.account);
+    try std.testing.expect(loaded.api.list_refresh_all);
+}
+
+test "registry load defaults missing api.list_refresh_all and rewrites file" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+    try tmp.dir.writeFile(.{
+        .sub_path = "accounts/registry.json",
+        .data =
+        \\{
+        \\  "schema_version": 3,
+        \\  "active_account_key": null,
+        \\  "api": {
+        \\    "usage": true,
+        \\    "account": true
+        \\  },
+        \\  "accounts": []
+        \\}
+        ,
+    });
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expect(loaded.api.usage);
+    try std.testing.expect(loaded.api.account);
+    try std.testing.expect(!loaded.api.list_refresh_all);
+
+    const registry_path = try std.fs.path.join(gpa, &[_][]const u8{ codex_home, "accounts", "registry.json" });
+    defer gpa.free(registry_path);
+    const saved = try bdd.readFileAlloc(gpa, registry_path);
+    defer gpa.free(saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"list_refresh_all\": false") != null);
+}
+
 test "registry load defaults missing auto threshold fields" {
     const gpa = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

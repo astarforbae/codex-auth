@@ -455,6 +455,42 @@ test "Scenario: Given config api disable when parsing then api disable action is
     }
 }
 
+test "Scenario: Given config list enable when parsing then list refresh action is preserved" {
+    const gpa = std.testing.allocator;
+    const args = [_][:0]const u8{ "codex-auth", "config", "list", "enable" };
+    var result = try cli.parseArgs(gpa, &args);
+    defer cli.freeParseResult(gpa, &result);
+
+    switch (result) {
+        .command => |cmd| switch (cmd) {
+            .config => |opts| switch (opts) {
+                .list_refresh => |action| try std.testing.expectEqual(cli.ListRefreshAction.enable, action),
+                else => return error.TestExpectedEqual,
+            },
+            else => return error.TestExpectedEqual,
+        },
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given config list disable when parsing then list refresh disable action is preserved" {
+    const gpa = std.testing.allocator;
+    const args = [_][:0]const u8{ "codex-auth", "config", "list", "disable" };
+    var result = try cli.parseArgs(gpa, &args);
+    defer cli.freeParseResult(gpa, &result);
+
+    switch (result) {
+        .command => |cmd| switch (cmd) {
+            .config => |opts| switch (opts) {
+                .list_refresh => |action| try std.testing.expectEqual(cli.ListRefreshAction.disable, action),
+                else => return error.TestExpectedEqual,
+            },
+            else => return error.TestExpectedEqual,
+        },
+        else => return error.TestExpectedEqual,
+    }
+}
+
 test "Scenario: Given config auto action mixed with threshold flags when parsing then usage error is returned" {
     const gpa = std.testing.allocator;
     const args = [_][:0]const u8{ "codex-auth", "config", "auto", "enable", "--5h", "12" };
@@ -537,6 +573,15 @@ test "Scenario: Given removed top-level auto command when parsing then usage err
 test "Scenario: Given config api unknown action when parsing then usage error is returned" {
     const gpa = std.testing.allocator;
     const args = [_][:0]const u8{ "codex-auth", "config", "api", "status" };
+    var result = try cli.parseArgs(gpa, &args);
+    defer cli.freeParseResult(gpa, &result);
+
+    try expectUsageError(result, .config, "unknown action `status`");
+}
+
+test "Scenario: Given config list unknown action when parsing then usage error is returned" {
+    const gpa = std.testing.allocator;
+    const args = [_][:0]const u8{ "codex-auth", "config", "list", "status" };
     var result = try cli.parseArgs(gpa, &args);
     defer cli.freeParseResult(gpa, &result);
 

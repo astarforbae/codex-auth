@@ -113,6 +113,7 @@ Remove-Item "$env:LOCALAPPDATA\codex-auth\bin\codex-auth-auto.exe" -Force -Error
 | `codex-auth config auto enable\|disable` | Enable or disable background auto-switching |
 | `codex-auth config auto [--5h <%>] [--weekly <%>]` | Set auto-switch thresholds |
 | `codex-auth config api enable\|disable` | Enable or disable both usage refresh and team name refresh API calls |
+| `codex-auth config list enable\|disable` | Enable or disable refreshing every account before `list` output |
 
 ---
 
@@ -123,6 +124,8 @@ Remove-Item "$env:LOCALAPPDATA\codex-auth\bin\codex-auth-auto.exe" -Force -Error
 ```shell
 codex-auth list
 ```
+
+When `codex-auth config list enable` is on, `list` refreshes every account's usage via the API before rendering and stores the refreshed snapshots in `registry.json`. Later `switch` commands reuse that cached usage data in the picker.
 
 ### Switch Account
 
@@ -263,6 +266,15 @@ codex-auth config api disable
 ```
 
 Changing `config api` updates `registry.json` immediately. `api enable` is shown as API mode and `api disable` is shown as local mode.
+
+Refresh every account during `list`:
+
+```shell
+codex-auth config list enable
+codex-auth config list disable
+```
+
+When enabled, each `list` call refreshes usage for every stored account snapshot before printing the table. Accounts that fail to refresh keep their previous cached usage and print a warning.
 
 ## Q&A
 

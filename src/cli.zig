@@ -58,9 +58,11 @@ pub const AutoOptions = union(enum) {
     configure: AutoThresholdOptions,
 };
 pub const ApiAction = enum { enable, disable };
+pub const ListRefreshAction = enum { enable, disable };
 pub const ConfigOptions = union(enum) {
     auto_switch: AutoOptions,
     api: ApiAction,
+    list_refresh: ListRefreshAction,
 };
 pub const DaemonMode = enum { watch, once };
 pub const DaemonOptions = struct { mode: DaemonMode };
@@ -352,6 +354,17 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const [:0]const u8) !Pars
             return usageErrorResult(allocator, .config, "unknown action `{s}` for `config api`.", .{action});
         }
 
+        if (std.mem.eql(u8, scope, "list")) {
+            if (args.len == 4 and isHelpFlag(std.mem.sliceTo(args[3], 0))) {
+                return .{ .command = .{ .help = .config } };
+            }
+            if (args.len != 4) return usageErrorResult(allocator, .config, "`config list` requires `enable` or `disable`.", .{});
+            const action = std.mem.sliceTo(args[3], 0);
+            if (std.mem.eql(u8, action, "enable")) return .{ .command = .{ .config = .{ .list_refresh = .enable } } };
+            if (std.mem.eql(u8, action, "disable")) return .{ .command = .{ .config = .{ .list_refresh = .disable } } };
+            return usageErrorResult(allocator, .config, "unknown action `{s}` for `config list`.", .{action});
+        }
+
         return usageErrorResult(allocator, .config, "unknown config section `{s}`.", .{scope});
     }
 
@@ -510,6 +523,14 @@ pub fn writeHelp(
     );
 
     if (use_color) try out.writeAll(ansi.bold);
+    try out.writeAll("List Refresh All:");
+    if (use_color) try out.writeAll(ansi.reset);
+    try out.print(
+        " {s}\n\n",
+        .{if (api_cfg.list_refresh_all) "ON" else "OFF"},
+    );
+
+    if (use_color) try out.writeAll(ansi.bold);
     try out.writeAll("Commands:");
     if (use_color) try out.writeAll(ansi.reset);
     try out.writeAll("\n\n");
@@ -537,6 +558,8 @@ pub fn writeHelp(
         .{ .name = "auto --5h <percent> [--weekly <percent>]", .description = "Configure auto-switch thresholds" },
         .{ .name = "api enable", .description = "Enable usage and account APIs" },
         .{ .name = "api disable", .description = "Disable usage and account APIs" },
+        .{ .name = "list enable", .description = "Refresh all accounts before `list` output" },
+        .{ .name = "list disable", .description = "Keep `list` on active-account refresh only" },
     };
     const parent_indent: usize = 2;
     const child_indent: usize = parent_indent + 4;
@@ -563,6 +586,8 @@ pub fn writeHelp(
     try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[2].name, config_details[2].description);
     try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[3].name, config_details[3].description);
     try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[4].name, config_details[4].description);
+    try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[5].name, config_details[5].description);
+    try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[6].name, config_details[6].description);
 
     try out.writeAll("\n");
     if (use_color) try out.writeAll(ansi.bold);
@@ -718,6 +743,8 @@ fn writeUsageSection(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth config auto --weekly <percent>\n");
             try out.writeAll("  codex-auth config api enable\n");
             try out.writeAll("  codex-auth config api disable\n");
+            try out.writeAll("  codex-auth config list enable\n");
+            try out.writeAll("  codex-auth config list disable\n");
         },
         .daemon => {
             try out.writeAll("  codex-auth daemon --watch\n");
@@ -758,6 +785,7 @@ fn writeExamplesSection(out: *std.Io.Writer, topic: HelpTopic) !void {
         .config => {
             try out.writeAll("  codex-auth config auto --5h 12 --weekly 8\n");
             try out.writeAll("  codex-auth config api enable\n");
+            try out.writeAll("  codex-auth config list enable\n");
         },
         .daemon => {
             try out.writeAll("  codex-auth daemon --watch\n");

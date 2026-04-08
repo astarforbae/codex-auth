@@ -6,6 +6,7 @@ const registry = @import("registry.zig");
 const auth = @import("auth.zig");
 const auto = @import("auto.zig");
 const format = @import("format.zig");
+const usage_api = @import("usage_api.zig");
 
 const skip_service_reconcile_env = "CODEX_AUTH_SKIP_SERVICE_RECONCILE";
 const account_name_refresh_only_env = "CODEX_AUTH_REFRESH_ACCOUNT_NAMES_ONLY";
@@ -20,6 +21,10 @@ const BackgroundRefreshLockAcquirer = *const fn (
     allocator: std.mem.Allocator,
     codex_home: []const u8,
 ) anyerror!?account_name_refresh.BackgroundRefreshLock;
+const UsageFetchByAuthPathFn = *const fn (
+    allocator: std.mem.Allocator,
+    auth_path: []const u8,
+) anyerror!usage_api.UsageFetchResult;
 
 pub fn main() !void {
     var exit_code: u8 = 0;
@@ -207,6 +212,79 @@ fn defaultAccountFetcher(
         access_token,
         account_id,
     );
+}
+
+fn defaultUsageFetcherForAuthPath(
+    allocator: std.mem.Allocator,
+    auth_path: []const u8,
+) !usage_api.UsageFetchResult {
+    return try usage_api.fetchUsageForAuthPathDetailed(allocator, auth_path);
+}
+
+pub fn shouldRefreshAllAccountUsageForList(reg: *const registry.Registry) bool {
+    return reg.api.usage and reg.api.list_refresh_all;
+}
+
+fn usageRefreshFailureReason(
+    buf: *[32]u8,
+    result: usage_api.UsageFetchResult,
+) []const u8 {
+    if (result.missing_auth) return "missing auth";
+    if (result.status_code) |status_code| {
+        return std.fmt.bufPrint(buf, "status {d}", .{status_code}) catch "request failed";
+    }
+    return "no usage data";
+}
+
+fn writeListUsageRefreshWarning(
+    err_out: *std.Io.Writer,
+    email: []const u8,
+    reason: []const u8,
+) !void {
+    try err_out.print("warning: failed to refresh usage for {s}: {s}\n", .{ email, reason });
+}
+
+pub fn refreshAllAccountUsageForListWithFetcher(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    reg: *registry.Registry,
+    err_out: *std.Io.Writer,
+    fetcher: UsageFetchByAuthPathFn,
+) !bool {
+    if (!shouldRefreshAllAccountUsageForList(reg)) return false;
+
+    var changed = false;
+    var reason_buf: [32]u8 = undefined;
+
+    var idx: usize = 0;
+    while (idx < reg.accounts.items.len) : (idx += 1) {
+        const email = reg.accounts.items[idx].email;
+        const account_key = reg.accounts.items[idx].account_key;
+        const auth_path = try registry.accountAuthPath(allocator, codex_home, account_key);
+        defer allocator.free(auth_path);
+
+        const result = fetcher(allocator, auth_path) catch |err| {
+            try writeListUsageRefreshWarning(err_out, email, @errorName(err));
+            continue;
+        };
+
+        if (result.snapshot) |snapshot| {
+            var latest = snapshot;
+            var consumed = false;
+            defer if (!consumed) registry.freeRateLimitSnapshot(allocator, &latest);
+
+            if (!registry.rateLimitSnapshotsEqual(reg.accounts.items[idx].last_usage, latest)) {
+                registry.updateUsage(allocator, reg, account_key, latest);
+                consumed = true;
+                changed = true;
+            }
+            continue;
+        }
+
+        try writeListUsageRefreshWarning(err_out, email, usageRefreshFailureReason(&reason_buf, result));
+    }
+
+    return changed;
 }
 
 fn maybeRefreshAccountNamesForAuthInfo(
@@ -477,10 +555,30 @@ fn handleList(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.Li
 
     var reg = try registry.loadRegistry(allocator, codex_home);
     defer reg.deinit(allocator);
+    var changed = false;
     if (try registry.syncActiveAccountFromAuth(allocator, codex_home, &reg)) {
+        changed = true;
+    }
+    if (shouldRefreshAllAccountUsageForList(&reg)) {
+        var stderr_buffer: [2048]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+        const err_out = &stderr_writer.interface;
+        if (try refreshAllAccountUsageForListWithFetcher(
+            allocator,
+            codex_home,
+            &reg,
+            err_out,
+            defaultUsageFetcherForAuthPath,
+        )) {
+            changed = true;
+        }
+        try err_out.flush();
+    } else if (try auto.refreshActiveUsage(allocator, codex_home, &reg)) {
+        changed = true;
+    }
+    if (changed) {
         try registry.saveRegistry(allocator, codex_home, &reg);
     }
-    try maybeRefreshForegroundUsage(allocator, codex_home, &reg, .list);
     try format.printAccounts(&reg);
     maybeSpawnBackgroundAccountNameRefresh(allocator, &reg);
 }
@@ -587,6 +685,12 @@ fn handleConfig(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.
     switch (opts) {
         .auto_switch => |auto_opts| try auto.handleAutoCommand(allocator, codex_home, auto_opts),
         .api => |action| try auto.handleApiCommand(allocator, codex_home, action),
+        .list_refresh => |action| {
+            var reg = try registry.loadRegistry(allocator, codex_home);
+            defer reg.deinit(allocator);
+            reg.api.list_refresh_all = action == .enable;
+            try registry.saveRegistry(allocator, codex_home, &reg);
+        },
     }
 }
 

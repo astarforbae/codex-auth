@@ -4,6 +4,7 @@ const auth_mod = @import("../auth.zig");
 const display_rows = @import("../display_rows.zig");
 const main_mod = @import("../main.zig");
 const registry = @import("../registry.zig");
+const usage_api = @import("../usage_api.zig");
 const bdd = @import("bdd_helpers.zig");
 
 const shared_user_id = "user-ESYgcy2QkOGZc0NoxSlFCeVT";
@@ -329,6 +330,193 @@ test "Scenario: Given foreground usage refresh targets when checking refresh pol
     try std.testing.expect(main_mod.shouldRefreshForegroundUsage(.list));
     try std.testing.expect(main_mod.shouldRefreshForegroundUsage(.switch_account));
     try std.testing.expect(!main_mod.shouldRefreshForegroundUsage(.remove_account));
+}
+
+test "Scenario: Given list refresh-all disabled when refreshing list usage then it skips every account" {
+    const TestState = struct {
+        var fetch_count: usize = 0;
+
+        fn unexpectedFetcher(
+            allocator: std.mem.Allocator,
+            auth_path: []const u8,
+        ) !usage_api.UsageFetchResult {
+            _ = allocator;
+            _ = auth_path;
+            fetch_count += 1;
+            return error.TestUnexpectedFetch;
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, primary_record_key, "user@example.com", "", .plus);
+    try appendAccount(gpa, &reg, secondary_record_key, "other@example.com", "", .team);
+
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    TestState.fetch_count = 0;
+    try std.testing.expect(!(try main_mod.refreshAllAccountUsageForListWithFetcher(
+        gpa,
+        codex_home,
+        &reg,
+        &aw.writer,
+        TestState.unexpectedFetcher,
+    )));
+    try std.testing.expectEqual(@as(usize, 0), TestState.fetch_count);
+    try std.testing.expectEqualStrings("", aw.written());
+}
+
+test "Scenario: Given list refresh-all enabled when refreshing list usage then it updates every cached account and switch rows can reuse it" {
+    const TestState = struct {
+        var fetch_count: usize = 0;
+
+        fn fetcher(
+            allocator: std.mem.Allocator,
+            auth_path: []const u8,
+        ) !usage_api.UsageFetchResult {
+            var info = try auth_mod.parseAuthInfo(allocator, auth_path);
+            defer info.deinit(allocator);
+            const account_id = info.chatgpt_account_id orelse return error.MissingChatgptAccountId;
+            fetch_count += 1;
+
+            var snapshot = registry.RateLimitSnapshot{
+                .primary = null,
+                .secondary = null,
+                .credits = null,
+                .plan_type = .plus,
+            };
+            if (std.mem.eql(u8, account_id, primary_account_id)) {
+                snapshot.primary = .{ .used_percent = 25, .window_minutes = 300, .resets_at = 1770000000 };
+                snapshot.secondary = .{ .used_percent = 60, .window_minutes = 10080, .resets_at = 1770500000 };
+                snapshot.plan_type = .plus;
+            } else if (std.mem.eql(u8, account_id, secondary_account_id)) {
+                snapshot.primary = .{ .used_percent = 75, .window_minutes = 300, .resets_at = 1770001234 };
+                snapshot.secondary = .{ .used_percent = 20, .window_minutes = 10080, .resets_at = 1770501234 };
+                snapshot.plan_type = .team;
+            } else {
+                return error.TestUnexpectedAccountId;
+            }
+
+            return .{ .snapshot = snapshot, .status_code = 200 };
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    reg.api.list_refresh_all = true;
+    try appendAccount(gpa, &reg, primary_record_key, "user@example.com", "", .plus);
+    try appendAccount(gpa, &reg, secondary_record_key, "other@example.com", "", .team);
+    try registry.setActiveAccountKey(gpa, &reg, primary_record_key);
+    try writeAccountSnapshotWithIds(gpa, codex_home, "user@example.com", "plus", shared_user_id, primary_account_id);
+    try writeAccountSnapshotWithIds(gpa, codex_home, "other@example.com", "team", shared_user_id, secondary_account_id);
+
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    TestState.fetch_count = 0;
+    try std.testing.expect(try main_mod.refreshAllAccountUsageForListWithFetcher(
+        gpa,
+        codex_home,
+        &reg,
+        &aw.writer,
+        TestState.fetcher,
+    ));
+    try std.testing.expectEqual(@as(usize, 2), TestState.fetch_count);
+    try std.testing.expectEqualStrings("", aw.written());
+    try std.testing.expectEqual(@as(f64, 25), reg.accounts.items[0].last_usage.?.primary.?.used_percent);
+    try std.testing.expectEqual(@as(f64, 75), reg.accounts.items[1].last_usage.?.primary.?.used_percent);
+    try std.testing.expect(reg.accounts.items[0].last_usage_at != null);
+    try std.testing.expect(reg.accounts.items[1].last_usage_at != null);
+
+    var display = try display_rows.buildDisplayRows(gpa, &reg, null);
+    defer display.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 2), display.rows.len);
+    const first_percent = reg.accounts.items[display.rows[0].account_index.?].last_usage.?.primary.?.used_percent;
+    const second_percent = reg.accounts.items[display.rows[1].account_index.?].last_usage.?.primary.?.used_percent;
+    try std.testing.expect((first_percent == 25 and second_percent == 75) or (first_percent == 75 and second_percent == 25));
+}
+
+test "Scenario: Given partial list refresh-all api failure when refreshing list usage then it preserves stale cache and prints a warning" {
+    const TestState = struct {
+        fn fetcher(
+            allocator: std.mem.Allocator,
+            auth_path: []const u8,
+        ) !usage_api.UsageFetchResult {
+            var info = try auth_mod.parseAuthInfo(allocator, auth_path);
+            defer info.deinit(allocator);
+            const account_id = info.chatgpt_account_id orelse return error.MissingChatgptAccountId;
+
+            if (std.mem.eql(u8, account_id, primary_account_id)) {
+                return .{
+                    .snapshot = .{
+                        .primary = .{ .used_percent = 33, .window_minutes = 300, .resets_at = 1770000000 },
+                        .secondary = null,
+                        .credits = null,
+                        .plan_type = .plus,
+                    },
+                    .status_code = 200,
+                };
+            }
+            if (std.mem.eql(u8, account_id, secondary_account_id)) {
+                return error.TimedOut;
+            }
+            return error.TestUnexpectedAccountId;
+        }
+    };
+
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    reg.api.list_refresh_all = true;
+    try appendAccount(gpa, &reg, primary_record_key, "user@example.com", "", .plus);
+    try appendAccount(gpa, &reg, secondary_record_key, "other@example.com", "", .team);
+    reg.accounts.items[1].last_usage = .{
+        .primary = .{ .used_percent = 88, .window_minutes = 300, .resets_at = 1760000000 },
+        .secondary = null,
+        .credits = null,
+        .plan_type = .team,
+    };
+    reg.accounts.items[1].last_usage_at = 123;
+    try writeAccountSnapshotWithIds(gpa, codex_home, "user@example.com", "plus", shared_user_id, primary_account_id);
+    try writeAccountSnapshotWithIds(gpa, codex_home, "other@example.com", "team", shared_user_id, secondary_account_id);
+
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    try std.testing.expect(try main_mod.refreshAllAccountUsageForListWithFetcher(
+        gpa,
+        codex_home,
+        &reg,
+        &aw.writer,
+        TestState.fetcher,
+    ));
+    try std.testing.expectEqual(@as(f64, 33), reg.accounts.items[0].last_usage.?.primary.?.used_percent);
+    try std.testing.expectEqual(@as(f64, 88), reg.accounts.items[1].last_usage.?.primary.?.used_percent);
+    try std.testing.expectEqual(@as(?i64, 123), reg.accounts.items[1].last_usage_at);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "warning: failed to refresh usage for other@example.com") != null);
 }
 
 test "Scenario: Given team name fetch candidates when checking grouped-account policy then only ambiguous team users qualify" {

@@ -54,12 +54,14 @@ pub const AutoSwitchConfig = struct {
 pub const ApiConfig = struct {
     usage: bool = true,
     account: bool = true,
+    list_refresh_all: bool = false,
 };
 
 const ApiConfigParseResult = struct {
     has_object: bool = false,
     has_usage: bool = false,
     has_account: bool = false,
+    has_list_refresh_all: bool = false,
 };
 
 pub const AccountRecord = struct {
@@ -2576,7 +2578,7 @@ fn parseApiConfig(cfg: *ApiConfig, v: std.json.Value) void {
 fn apiConfigNeedsRewrite(v: std.json.Value) bool {
     var cfg = defaultApiConfig();
     const result = parseApiConfigDetailed(&cfg, v);
-    return !result.has_object or !result.has_usage or !result.has_account;
+    return !result.has_object or !result.has_usage or !result.has_account or !result.has_list_refresh_all;
 }
 
 fn parseApiConfigDetailed(cfg: *ApiConfig, v: std.json.Value) ApiConfigParseResult {
@@ -2599,6 +2601,15 @@ fn parseApiConfigDetailed(cfg: *ApiConfig, v: std.json.Value) ApiConfigParseResu
             .bool => |flag| {
                 cfg.account = flag;
                 result.has_account = true;
+            },
+            else => {},
+        }
+    }
+    if (obj.get("list_refresh_all")) |list_refresh_all| {
+        switch (list_refresh_all) {
+            .bool => |flag| {
+                cfg.list_refresh_all = flag;
+                result.has_list_refresh_all = true;
             },
             else => {},
         }
