@@ -86,12 +86,7 @@ fn runMain() !void {
         .import_auth => |opts| try handleImport(allocator, codex_home.?, opts),
         .switch_account => |opts| try handleSwitch(allocator, codex_home.?, opts),
         .remove_account => |opts| try handleRemove(allocator, codex_home.?, opts),
-        .provider => |provider_cmd| switch (provider_cmd) {
-            .add => |opts| try handleProviderAdd(allocator, codex_home.?, opts),
-            .list => try handleProviderList(allocator, codex_home.?),
-            .update => |opts| try handleProviderUpdate(allocator, codex_home.?, opts),
-            .remove => |opts| try handleProviderRemove(allocator, codex_home.?, opts),
-        },
+        .provider => |_| try handleProviderList(allocator, codex_home.?),
         .clean => |_| try handleClean(allocator, codex_home.?),
     }
 
@@ -103,9 +98,6 @@ fn runMain() !void {
 fn isHandledCliError(err: anyerror) bool {
     return err == error.AccountNotFound or
         err == error.TargetNotFound or
-        err == error.ProviderProfileNotFound or
-        err == error.ProviderProfileConflict or
-        err == error.ProviderProfileQueryAmbiguous or
         err == error.CodexLoginFailed or
         err == error.RemoveConfirmationUnavailable or
         err == error.RemoveSelectionRequiresTty or
@@ -567,7 +559,7 @@ fn handleList(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.Li
 
     var reg = try registry.loadRegistry(allocator, codex_home);
     defer reg.deinit(allocator);
-    var changed = false;
+    var changed = try provider_config.syncRegistryProvidersFromConfig(allocator, codex_home, &reg);
     if (registry.activeProviderProfileId(&reg) == null and try registry.syncActiveAccountFromAuth(allocator, codex_home, &reg)) {
         changed = true;
     }
@@ -660,6 +652,9 @@ fn handleImport(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.
 pub fn handleSwitch(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.SwitchOptions) !void {
     var reg = try registry.loadRegistry(allocator, codex_home);
     defer reg.deinit(allocator);
+    if (try provider_config.syncRegistryProvidersFromConfig(allocator, codex_home, &reg)) {
+        try registry.saveRegistry(allocator, codex_home, &reg);
+    }
     if (registry.activeProviderProfileId(&reg) == null and try registry.syncActiveAccountFromAuth(allocator, codex_home, &reg)) {
         try registry.saveRegistry(allocator, codex_home, &reg);
     }
@@ -700,19 +695,13 @@ fn activateTarget(
     switch (selected) {
         .account => |idx| {
             try registry.activateAccountByKey(allocator, codex_home, reg, reg.accounts.items[idx].account_key);
-            try provider_config.clearManagedProviderProfile(allocator, codex_home);
+            try provider_config.clearProviderSelection(allocator, codex_home);
         },
         .provider_profile => |idx| {
             const profile = &reg.provider_profiles.items[idx];
             try registry.setActiveProviderProfile(allocator, reg, profile.profile_id);
             profile.last_used_at = std.time.timestamp();
-            try provider_config.applyManagedProviderProfile(allocator, codex_home, .{
-                .provider_id = profile.provider_id,
-                .base_url = profile.base_url,
-                .api_key = profile.api_key,
-                .wire_api = profile.wire_api,
-                .model = profile.model,
-            });
+            try provider_config.applyProviderSelection(allocator, codex_home, profile.provider_id);
         },
     }
 }
@@ -724,17 +713,11 @@ fn syncManagedConfigForActiveProvider(
 ) !void {
     const active_id = registry.activeProviderProfileId(reg) orelse return;
     const idx = registry.findProviderProfileIndexById(reg, active_id) orelse {
-        try provider_config.clearManagedProviderProfile(allocator, codex_home);
+        try provider_config.clearProviderSelection(allocator, codex_home);
         return;
     };
     const profile = &reg.provider_profiles.items[idx];
-    try provider_config.applyManagedProviderProfile(allocator, codex_home, .{
-        .provider_id = profile.provider_id,
-        .base_url = profile.base_url,
-        .api_key = profile.api_key,
-        .wire_api = profile.wire_api,
-        .model = profile.model,
-    });
+    try provider_config.applyProviderSelection(allocator, codex_home, profile.provider_id);
 }
 
 fn restoreFallbackTargetAfterProviderRemoval(
@@ -753,7 +736,7 @@ fn restoreFallbackTargetAfterProviderRemoval(
         try activateTarget(allocator, codex_home, reg, .{ .provider_profile = idx });
         return;
     }
-    try provider_config.clearManagedProviderProfile(allocator, codex_home);
+    try provider_config.clearProviderSelection(allocator, codex_home);
 }
 
 fn handleConfig(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.ConfigOptions) !void {
@@ -836,25 +819,6 @@ fn printProviderProfileAmbiguousError(
     _ = allocator;
 }
 
-fn resolveProviderProfileIndexByQuery(
-    allocator: std.mem.Allocator,
-    reg: *registry.Registry,
-    query: []const u8,
-) !usize {
-    var matches = try findMatchingProviderProfiles(allocator, reg, query);
-    defer matches.deinit(allocator);
-
-    if (matches.items.len == 0) {
-        try printProviderProfileNotFoundError(query);
-        return error.ProviderProfileNotFound;
-    }
-    if (matches.items.len > 1) {
-        try printProviderProfileAmbiguousError(allocator, reg, query, matches.items);
-        return error.ProviderProfileQueryAmbiguous;
-    }
-    return matches.items[0];
-}
-
 fn printProviderProfiles(reg: *const registry.Registry) !void {
     var buffer: [4096]u8 = undefined;
     var writer = std.fs.File.stdout().writer(&buffer);
@@ -876,101 +840,13 @@ fn printProviderProfiles(reg: *const registry.Registry) !void {
     try out.flush();
 }
 
-fn printProviderProfileAction(action: []const u8, label: []const u8) !void {
-    var buffer: [512]u8 = undefined;
-    var writer = std.fs.File.stdout().writer(&buffer);
-    const out = &writer.interface;
-    try out.print("{s} provider profile '{s}'.\n", .{ action, label });
-    try out.flush();
-}
-
-pub fn handleProviderAdd(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.ProviderAddOptions) !void {
-    var reg = try registry.loadRegistry(allocator, codex_home);
-    defer reg.deinit(allocator);
-
-    const profile_id = opts.provider_id orelse opts.label;
-    const existed = registry.findProviderProfileIndexById(&reg, profile_id) != null;
-    try registry.upsertProviderProfile(allocator, &reg, .{
-        .profile_id = try allocator.dupe(u8, profile_id),
-        .label = try allocator.dupe(u8, opts.label),
-        .provider_id = try allocator.dupe(u8, profile_id),
-        .base_url = try allocator.dupe(u8, opts.base_url),
-        .api_key = try allocator.dupe(u8, opts.api_key),
-        .wire_api = try allocator.dupe(u8, "responses"),
-        .model = if (opts.model) |value| try allocator.dupe(u8, value) else null,
-        .created_at = std.time.timestamp(),
-        .last_used_at = null,
-    });
-    try syncManagedConfigForActiveProvider(allocator, codex_home, &reg);
-    try registry.saveRegistry(allocator, codex_home, &reg);
-    try printProviderProfileAction(if (existed) "Updated" else "Saved", opts.label);
-}
-
 fn handleProviderList(allocator: std.mem.Allocator, codex_home: []const u8) !void {
     var reg = try registry.loadRegistry(allocator, codex_home);
     defer reg.deinit(allocator);
+    if (try provider_config.syncRegistryProvidersFromConfig(allocator, codex_home, &reg)) {
+        try registry.saveRegistry(allocator, codex_home, &reg);
+    }
     try printProviderProfiles(&reg);
-}
-
-pub fn handleProviderUpdate(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.ProviderUpdateOptions) !void {
-    var reg = try registry.loadRegistry(allocator, codex_home);
-    defer reg.deinit(allocator);
-
-    const idx = try resolveProviderProfileIndexByQuery(allocator, &reg, opts.query);
-    const existing = reg.provider_profiles.items[idx];
-    const was_active = if (registry.activeProviderProfileId(&reg)) |active_id|
-        std.mem.eql(u8, active_id, existing.profile_id)
-    else
-        false;
-    const new_profile_id = opts.provider_id orelse existing.profile_id;
-    const final_label = try allocator.dupe(u8, opts.label orelse existing.label);
-    defer allocator.free(final_label);
-    try registry.upsertProviderProfile(allocator, &reg, .{
-        .profile_id = try allocator.dupe(u8, new_profile_id),
-        .label = try allocator.dupe(u8, final_label),
-        .provider_id = try allocator.dupe(u8, new_profile_id),
-        .base_url = try allocator.dupe(u8, opts.base_url orelse existing.base_url),
-        .api_key = try allocator.dupe(u8, opts.api_key orelse existing.api_key),
-        .wire_api = try allocator.dupe(u8, existing.wire_api),
-        .model = if (opts.clear_model)
-            null
-        else if (opts.model) |value|
-            try allocator.dupe(u8, value)
-        else if (existing.model) |value|
-            try allocator.dupe(u8, value)
-        else
-            null,
-        .created_at = existing.created_at,
-        .last_used_at = existing.last_used_at,
-    });
-    if (!std.mem.eql(u8, new_profile_id, existing.profile_id)) {
-        _ = registry.removeProviderProfileById(allocator, &reg, existing.profile_id);
-    }
-    if (was_active) {
-        try registry.setActiveProviderProfile(allocator, &reg, new_profile_id);
-    }
-    try syncManagedConfigForActiveProvider(allocator, codex_home, &reg);
-    try registry.saveRegistry(allocator, codex_home, &reg);
-    try printProviderProfileAction("Updated", final_label);
-}
-
-pub fn handleProviderRemove(allocator: std.mem.Allocator, codex_home: []const u8, opts: cli.ProviderRemoveOptions) !void {
-    var reg = try registry.loadRegistry(allocator, codex_home);
-    defer reg.deinit(allocator);
-
-    const idx = try resolveProviderProfileIndexByQuery(allocator, &reg, opts.query);
-    const label = try allocator.dupe(u8, reg.provider_profiles.items[idx].label);
-    defer allocator.free(label);
-    const removing_active_provider = if (registry.activeProviderProfileId(&reg)) |profile_id|
-        std.mem.eql(u8, profile_id, reg.provider_profiles.items[idx].profile_id)
-    else
-        false;
-    _ = registry.removeProviderProfileById(allocator, &reg, reg.provider_profiles.items[idx].profile_id);
-    if (removing_active_provider) {
-        try restoreFallbackTargetAfterProviderRemoval(allocator, codex_home, &reg);
-    }
-    try registry.saveRegistry(allocator, codex_home, &reg);
-    try printProviderProfileAction("Removed", label);
 }
 
 fn freeOwnedStrings(allocator: std.mem.Allocator, items: []const []const u8) void {
@@ -1165,48 +1041,43 @@ pub fn handleRemove(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
     var reg = try registry.loadRegistry(allocator, codex_home);
     defer reg.deinit(allocator);
 
+    if (try provider_config.syncRegistryProvidersFromConfig(allocator, codex_home, &reg)) {
+        try registry.saveRegistry(allocator, codex_home, &reg);
+    }
     if (registry.activeProviderProfileId(&reg) == null and try registry.syncActiveAccountFromAuth(allocator, codex_home, &reg)) {
         try registry.saveRegistry(allocator, codex_home, &reg);
     }
     try maybeRefreshForegroundUsage(allocator, codex_home, &reg, .remove_account);
 
-    var selected: ?[]target_rows.TargetRef = null;
+    var selected: ?[]usize = null;
     if (opts.all) {
-        selected = try allocator.alloc(target_rows.TargetRef, reg.accounts.items.len + reg.provider_profiles.items.len);
-        var out_idx: usize = 0;
-        for (reg.accounts.items, 0..) |_, idx| {
-            selected.?[out_idx] = .{ .account = idx };
-            out_idx += 1;
-        }
-        for (reg.provider_profiles.items, 0..) |_, idx| {
-            selected.?[out_idx] = .{ .provider_profile = idx };
-            out_idx += 1;
-        }
+        selected = try allocator.alloc(usize, reg.accounts.items.len);
+        for (selected.?, 0..) |*slot, idx| slot.* = idx;
     } else if (opts.query) |query| {
-        var matches = try findMatchingTargets(allocator, &reg, query);
+        var matches = try findMatchingAccounts(allocator, &reg, query);
         defer matches.deinit(allocator);
 
         if (matches.items.len == 0) {
-            try printTargetNotFoundError(query);
-            return error.TargetNotFound;
+            try cli.printAccountNotFoundError(query);
+            return error.AccountNotFound;
         }
 
         if (matches.items.len > 1) {
-            var matched_labels = try cli.buildRemoveLabelsForTargets(allocator, &reg, matches.items);
+            var matched_labels = try cli.buildRemoveLabels(allocator, &reg, matches.items);
             defer {
                 freeOwnedStrings(allocator, matched_labels.items);
                 matched_labels.deinit(allocator);
             }
             if (!std.fs.File.stdin().isTty()) {
-                try printRemoveTargetsConfirmationUnavailable(matched_labels.items);
+                try cli.printRemoveConfirmationUnavailableError(matched_labels.items);
                 return error.RemoveConfirmationUnavailable;
             }
-            if (!(try confirmRemoveTargets(matched_labels.items))) return;
+            if (!(try cli.confirmRemoveMatches(matched_labels.items))) return;
         }
 
-        selected = try allocator.dupe(target_rows.TargetRef, matches.items);
+        selected = try allocator.dupe(usize, matches.items);
     } else {
-        selected = cli.selectTargetsToRemove(allocator, &reg) catch |err| switch (err) {
+        selected = cli.selectAccountsToRemove(allocator, &reg) catch |err| switch (err) {
             error.InvalidRemoveSelectionInput => {
                 try cli.printInvalidRemoveSelectionError();
                 return error.InvalidRemoveSelectionInput;
@@ -1218,31 +1089,10 @@ pub fn handleRemove(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
     defer allocator.free(selected.?);
     if (selected.?.len == 0) return;
 
-    var removed_labels = try cli.buildRemoveLabelsForTargets(allocator, &reg, selected.?);
+    var removed_labels = try cli.buildRemoveLabels(allocator, &reg, selected.?);
     defer {
         freeOwnedStrings(allocator, removed_labels.items);
         removed_labels.deinit(allocator);
-    }
-
-    var selected_account_indices = std.ArrayList(usize).empty;
-    defer selected_account_indices.deinit(allocator);
-    var selected_provider_ids = std.ArrayList([]u8).empty;
-    defer {
-        for (selected_provider_ids.items) |profile_id| allocator.free(profile_id);
-        selected_provider_ids.deinit(allocator);
-    }
-    var removed_active_provider = false;
-    for (selected.?) |ref| {
-        switch (ref) {
-            .account => |idx| try selected_account_indices.append(allocator, idx),
-            .provider_profile => |idx| {
-                const profile = reg.provider_profiles.items[idx];
-                try selected_provider_ids.append(allocator, try allocator.dupe(u8, profile.profile_id));
-                if (registry.activeProviderProfileId(&reg)) |active_id| {
-                    if (std.mem.eql(u8, active_id, profile.profile_id)) removed_active_provider = true;
-                }
-            },
-        }
     }
 
     const current_active_account_key = if (trackedActiveAccountKey(&reg)) |key|
@@ -1255,7 +1105,7 @@ pub fn handleRemove(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
     defer current_auth_state.deinit(allocator);
 
     const active_removed = if (current_active_account_key) |key|
-        selectionContainsAccountKey(&reg, selected_account_indices.items, key)
+        selectionContainsAccountKey(&reg, selected.?, key)
     else
         false;
     const allow_auth_file_update = if (current_active_account_key) |key|
@@ -1265,12 +1115,12 @@ pub fn handleRemove(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
         true
     else if (opts.all)
         current_auth_state.syncable and current_auth_state.record_key != null and
-            selectionContainsAccountKey(&reg, selected_account_indices.items, current_auth_state.record_key.?)
+            selectionContainsAccountKey(&reg, selected.?, current_auth_state.record_key.?)
     else
         false;
 
     const replacement_account_key = if (active_removed)
-        try selectBestRemainingAccountKeyByUsageAlloc(allocator, &reg, selected_account_indices.items)
+        try selectBestRemainingAccountKeyByUsageAlloc(allocator, &reg, selected.?)
     else
         null;
     defer if (replacement_account_key) |key| allocator.free(key);
@@ -1283,18 +1133,10 @@ pub fn handleRemove(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
         }
     }
 
-    if (selected_account_indices.items.len > 0) {
-        try registry.removeAccounts(allocator, codex_home, &reg, selected_account_indices.items);
-        try reconcileActiveAuthAfterRemove(allocator, codex_home, &reg, allow_auth_file_update);
-    }
-    for (selected_provider_ids.items) |profile_id| {
-        _ = registry.removeProviderProfileById(allocator, &reg, profile_id);
-    }
-    if (removed_active_provider) {
-        try restoreFallbackTargetAfterProviderRemoval(allocator, codex_home, &reg);
-    }
+    try registry.removeAccounts(allocator, codex_home, &reg, selected.?);
+    try reconcileActiveAuthAfterRemove(allocator, codex_home, &reg, allow_auth_file_update);
     try registry.saveRegistry(allocator, codex_home, &reg);
-    try printRemoveTargetSummary(removed_labels.items);
+    try cli.printRemoveSummary(removed_labels.items);
 }
 
 fn handleTopLevelHelp(allocator: std.mem.Allocator, codex_home: []const u8) !void {

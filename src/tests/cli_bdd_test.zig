@@ -731,69 +731,6 @@ test "Scenario: Given switch with unexpected flag when parsing then usage error 
     try expectUsageError(result, .switch_account, "unknown flag");
 }
 
-test "Scenario: Given provider add command when parsing then options are captured" {
-    const gpa = std.testing.allocator;
-    const args = [_][:0]const u8{
-        "codex-auth",
-        "provider",
-        "add",
-        "openrouter",
-        "--base-url",
-        "https://openrouter.ai/api/v1",
-        "--api-key",
-        "sk-test",
-    };
-    var result = try cli.parseArgs(gpa, &args);
-    defer cli.freeParseResult(gpa, &result);
-
-    switch (result) {
-        .command => |cmd| switch (cmd) {
-            .provider => |provider_cmd| switch (provider_cmd) {
-                .add => |opts| {
-                    try std.testing.expectEqualStrings("openrouter", opts.label);
-                    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", opts.base_url);
-                    try std.testing.expectEqualStrings("sk-test", opts.api_key);
-                    try std.testing.expect(opts.provider_id == null);
-                },
-                else => return error.TestExpectedEqual,
-            },
-            else => return error.TestExpectedEqual,
-        },
-        else => return error.TestExpectedEqual,
-    }
-}
-
-test "Scenario: Given provider update command when parsing then update flags are captured" {
-    const gpa = std.testing.allocator;
-    const args = [_][:0]const u8{
-        "codex-auth",
-        "provider",
-        "update",
-        "openrouter",
-        "--provider-id",
-        "openrouter-v2",
-        "--model",
-        "gpt-5.4",
-    };
-    var result = try cli.parseArgs(gpa, &args);
-    defer cli.freeParseResult(gpa, &result);
-
-    switch (result) {
-        .command => |cmd| switch (cmd) {
-            .provider => |provider_cmd| switch (provider_cmd) {
-                .update => |opts| {
-                    try std.testing.expectEqualStrings("openrouter", opts.query);
-                    try std.testing.expectEqualStrings("openrouter-v2", opts.provider_id.?);
-                    try std.testing.expectEqualStrings("gpt-5.4", opts.model.?);
-                },
-                else => return error.TestExpectedEqual,
-            },
-            else => return error.TestExpectedEqual,
-        },
-        else => return error.TestExpectedEqual,
-    }
-}
-
 test "Scenario: Given provider help when rendering then provider usage is included" {
     const gpa = std.testing.allocator;
     var aw: std.Io.Writer.Allocating = .init(gpa);
@@ -802,8 +739,8 @@ test "Scenario: Given provider help when rendering then provider usage is includ
     try cli.writeCommandHelp(&aw.writer, false, .provider);
 
     const help = aw.written();
-    try std.testing.expect(std.mem.indexOf(u8, help, "codex-auth provider add <label>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, help, "codex-auth provider remove <query>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "codex-auth provider list") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "provider add") == null);
 }
 
 test "Scenario: Given remove with positional query when parsing then query mode is preserved" {

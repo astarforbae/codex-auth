@@ -2,7 +2,7 @@
 
 ![command list](https://github.com/user-attachments/assets/6c13a2d6-f9da-47ea-8ec8-0394fc072d40)
 
-`codex-auth` is a command-line tool for switching Codex accounts and managed provider profiles.
+`codex-auth` is a command-line tool for switching Codex accounts and provider profiles discovered from `~/.codex/config.toml`.
 
 > [!IMPORTANT]
 > For **Codex CLI** and **Codex App** users, switch accounts, then restart the client for the new account to take effect.
@@ -111,17 +111,14 @@ Remove-Item "$env:LOCALAPPDATA\codex-auth\bin\codex-auth-auto.exe" -Force -Error
 | `codex-auth list` | List all accounts |
 | `codex-auth login [--device-auth]` | Run `codex login` (optionally with `--device-auth`), then add the current account |
 | `codex-auth switch [<query>]` | Switch the active account or provider profile |
-| `codex-auth remove [<query>\|--all]` | Remove accounts or provider profiles |
+| `codex-auth remove [<query>\|--all]` | Remove accounts |
 | `codex-auth status` | Show auto-switch, service, target kind, and usage status |
 
 ### Provider Profiles
 
 | Command | Description |
 |---------|-------------|
-| `codex-auth provider add <label> --base-url <url> --api-key <key> [--provider-id <id>] [--model <model>]` | Create or replace a managed provider profile |
-| `codex-auth provider list` | List saved provider profiles |
-| `codex-auth provider update <query> [flags...]` | Update one provider profile |
-| `codex-auth provider remove <query>` | Remove one provider profile |
+| `codex-auth provider list` | List provider profiles scanned from `~/.codex/config.toml` |
 
 ### Import
 
@@ -150,7 +147,7 @@ Remove-Item "$env:LOCALAPPDATA\codex-auth\bin\codex-auth-auto.exe" -Force -Error
 codex-auth list
 ```
 
-When `codex-auth config list enable` is on, `list` refreshes every account's usage via the API before rendering and stores the refreshed snapshots in `registry.json`. Later `switch` commands reuse that cached usage data in the picker. Provider profiles are shown in the same table with `PLAN=provider` and `-` usage cells.
+When `codex-auth config list enable` is on, `list` refreshes every account's usage via the API before rendering and stores the refreshed snapshots in `registry.json`. Later `switch` commands reuse that cached usage data in the picker. Provider profiles are scanned from `~/.codex/config.toml` on each `list` and shown in the same table with `PLAN=provider` and `-` usage cells.
 
 ### Switch Target
 
@@ -160,7 +157,7 @@ Interactive: shows accounts and provider profiles in one picker.
 codex-auth switch
 ```
 
-Before the picker opens, the current active account's usage is refreshed once so the selected row is not stale. If the active target is a provider profile, auth sync is skipped and the managed provider block in `~/.codex/config.toml` remains authoritative.
+Before the picker opens, the current active account's usage is refreshed once so the selected row is not stale. If the active target is a provider profile, auth sync is skipped and `~/.codex/config.toml` remains authoritative.
 
 ![command switch](https://github.com/user-attachments/assets/48a86acf-2a6e-4206-a8c4-591989fdc0df)
 
@@ -170,28 +167,38 @@ Non-interactive: fuzzy match by email, alias, provider label, or provider id.
 codex-auth switch john             # match any account containing "john"
 codex-auth switch john@gmail.com   # match by full or partial email
 codex-auth switch work             # match by alias set during import
-codex-auth switch openrouter       # match a provider profile
+codex-auth switch openrouter       # match a scanned provider profile
 ```
 
 If the keyword matches multiple targets, the command falls back to interactive selection. Press `q` to quit without switching.
 
-### Remove Targets
+### Remove Accounts
 
 ```shell
 codex-auth remove
 ```
 
-`remove` can delete accounts and provider profiles from the same unified selector. When the active provider profile is removed and another managed target remains, `codex-auth` automatically promotes a fallback target and rewrites the managed provider block if needed.
+`remove` only deletes stored accounts. Provider profiles stay in `~/.codex/config.toml`; edit that file directly if you want to add, change, or remove them.
 
 ### Manage Provider Profiles
 
-Provider profiles are stored in `registry.json` and written into a managed block in `~/.codex/config.toml` only when that profile is active.
+Add provider blocks directly to `~/.codex/config.toml`. `codex-auth` scans `[model_providers.<id>]` entries on each `list`, `switch`, and `provider list`.
 
 ```shell
-codex-auth provider add openrouter --base-url https://openrouter.ai/api/v1 --api-key sk-test
+# ~/.codex/config.toml
+model_provider = "openrouter"
+disable_response_storage = true
+preferred_auth_method = "apikey"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+wire_api = "responses"
+experimental_bearer_token = "sk-test"
+
+# then inspect or switch to it
 codex-auth provider list
-codex-auth provider update openrouter --provider-id openrouter-eu --model gpt-5.4
-codex-auth provider remove openrouter-eu
+codex-auth switch openrouter
 ```
 
 ### Login (Add Account)

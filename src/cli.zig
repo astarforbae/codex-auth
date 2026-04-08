@@ -48,30 +48,8 @@ pub const RemoveOptions = struct {
     query: ?[]u8,
     all: bool,
 };
-pub const ProviderAddOptions = struct {
-    label: []u8,
-    provider_id: ?[]u8,
-    base_url: []u8,
-    api_key: []u8,
-    model: ?[]u8,
-};
-pub const ProviderUpdateOptions = struct {
-    query: []u8,
-    label: ?[]u8,
-    provider_id: ?[]u8,
-    base_url: ?[]u8,
-    api_key: ?[]u8,
-    model: ?[]u8,
-    clear_model: bool,
-};
-pub const ProviderRemoveOptions = struct {
-    query: []u8,
-};
 pub const ProviderCommand = union(enum) {
-    add: ProviderAddOptions,
     list: void,
-    update: ProviderUpdateOptions,
-    remove: ProviderRemoveOptions,
 };
 pub const CleanOptions = struct {};
 pub const AutoAction = enum { enable, disable };
@@ -436,10 +414,7 @@ fn freeCommand(allocator: std.mem.Allocator, cmd: *Command) void {
             if (opts.query) |q| allocator.free(q);
         },
         .provider => |*provider_cmd| switch (provider_cmd.*) {
-            .add => |*opts| freeProviderAddOptions(allocator, opts),
             .list => {},
-            .update => |*opts| freeProviderUpdateOptions(allocator, opts),
-            .remove => |*opts| allocator.free(opts.query),
         },
         else => {},
     }
@@ -513,23 +488,6 @@ fn freeImportOptions(allocator: std.mem.Allocator, auth_path: ?[]u8, alias: ?[]u
     if (alias) |value| allocator.free(value);
 }
 
-fn freeProviderAddOptions(allocator: std.mem.Allocator, opts: *ProviderAddOptions) void {
-    allocator.free(opts.label);
-    if (opts.provider_id) |value| allocator.free(value);
-    allocator.free(opts.base_url);
-    allocator.free(opts.api_key);
-    if (opts.model) |value| allocator.free(value);
-}
-
-fn freeProviderUpdateOptions(allocator: std.mem.Allocator, opts: *ProviderUpdateOptions) void {
-    allocator.free(opts.query);
-    if (opts.label) |value| allocator.free(value);
-    if (opts.provider_id) |value| allocator.free(value);
-    if (opts.base_url) |value| allocator.free(value);
-    if (opts.api_key) |value| allocator.free(value);
-    if (opts.model) |value| allocator.free(value);
-}
-
 fn parseProviderArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !ParseResult {
     if (rest.len == 0) return usageErrorResult(allocator, .provider, "`provider` requires a subcommand.", .{});
     if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
@@ -540,186 +498,7 @@ fn parseProviderArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !
     if (std.mem.eql(u8, subcommand, "list")) {
         return try parseSimpleCommandArgs(allocator, "provider list", .provider, .{ .provider = .{ .list = {} } }, rest[1..]);
     }
-    if (std.mem.eql(u8, subcommand, "add")) {
-        return try parseProviderAddArgs(allocator, rest[1..]);
-    }
-    if (std.mem.eql(u8, subcommand, "update")) {
-        return try parseProviderUpdateArgs(allocator, rest[1..]);
-    }
-    if (std.mem.eql(u8, subcommand, "remove")) {
-        return try parseProviderRemoveArgs(allocator, rest[1..]);
-    }
     return usageErrorResult(allocator, .provider, "unknown provider subcommand `{s}`.", .{subcommand});
-}
-
-fn parseProviderAddArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !ParseResult {
-    if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
-        return .{ .command = .{ .help = .provider } };
-    }
-
-    var opts = ProviderAddOptions{
-        .label = &.{},
-        .provider_id = null,
-        .base_url = &.{},
-        .api_key = &.{},
-        .model = null,
-    };
-    var has_label = false;
-    var has_base_url = false;
-    var has_api_key = false;
-    errdefer freeProviderAddOptions(allocator, &opts);
-
-    var i: usize = 0;
-    while (i < rest.len) : (i += 1) {
-        const arg = std.mem.sliceTo(rest[i], 0);
-        if (std.mem.eql(u8, arg, "--provider-id")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--provider-id`.", .{});
-            if (opts.provider_id != null) return usageErrorResult(allocator, .provider, "duplicate `--provider-id` for `provider add`.", .{});
-            opts.provider_id = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--base-url")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--base-url`.", .{});
-            if (has_base_url) return usageErrorResult(allocator, .provider, "duplicate `--base-url` for `provider add`.", .{});
-            opts.base_url = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            has_base_url = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--api-key")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--api-key`.", .{});
-            if (has_api_key) return usageErrorResult(allocator, .provider, "duplicate `--api-key` for `provider add`.", .{});
-            opts.api_key = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            has_api_key = true;
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--model")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--model`.", .{});
-            if (opts.model != null) return usageErrorResult(allocator, .provider, "duplicate `--model` for `provider add`.", .{});
-            opts.model = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            i += 1;
-            continue;
-        }
-        if (isHelpFlag(arg)) {
-            return usageErrorResult(allocator, .provider, "`--help` must be used by itself for `provider add`.", .{});
-        }
-        if (std.mem.startsWith(u8, arg, "-")) {
-            return usageErrorResult(allocator, .provider, "unknown flag `{s}` for `provider add`.", .{arg});
-        }
-        if (has_label) {
-            return usageErrorResult(allocator, .provider, "unexpected extra label `{s}` for `provider add`.", .{arg});
-        }
-        opts.label = try allocator.dupe(u8, arg);
-        has_label = true;
-    }
-
-    if (!has_label) return usageErrorResult(allocator, .provider, "`provider add` requires a label.", .{});
-    if (!has_base_url) return usageErrorResult(allocator, .provider, "`provider add` requires `--base-url`.", .{});
-    if (!has_api_key) return usageErrorResult(allocator, .provider, "`provider add` requires `--api-key`.", .{});
-
-    return .{ .command = .{ .provider = .{ .add = opts } } };
-}
-
-fn parseProviderUpdateArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !ParseResult {
-    if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
-        return .{ .command = .{ .help = .provider } };
-    }
-
-    var opts = ProviderUpdateOptions{
-        .query = &.{},
-        .label = null,
-        .provider_id = null,
-        .base_url = null,
-        .api_key = null,
-        .model = null,
-        .clear_model = false,
-    };
-    var has_query = false;
-    errdefer freeProviderUpdateOptions(allocator, &opts);
-
-    var i: usize = 0;
-    while (i < rest.len) : (i += 1) {
-        const arg = std.mem.sliceTo(rest[i], 0);
-        if (std.mem.eql(u8, arg, "--label")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--label`.", .{});
-            if (opts.label != null) return usageErrorResult(allocator, .provider, "duplicate `--label` for `provider update`.", .{});
-            opts.label = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--provider-id")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--provider-id`.", .{});
-            if (opts.provider_id != null) return usageErrorResult(allocator, .provider, "duplicate `--provider-id` for `provider update`.", .{});
-            opts.provider_id = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--base-url")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--base-url`.", .{});
-            if (opts.base_url != null) return usageErrorResult(allocator, .provider, "duplicate `--base-url` for `provider update`.", .{});
-            opts.base_url = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--api-key")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--api-key`.", .{});
-            if (opts.api_key != null) return usageErrorResult(allocator, .provider, "duplicate `--api-key` for `provider update`.", .{});
-            opts.api_key = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--model")) {
-            if (i + 1 >= rest.len) return usageErrorResult(allocator, .provider, "missing value for `--model`.", .{});
-            if (opts.model != null or opts.clear_model) return usageErrorResult(allocator, .provider, "`provider update` cannot combine duplicate model updates.", .{});
-            opts.model = try allocator.dupe(u8, std.mem.sliceTo(rest[i + 1], 0));
-            i += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--clear-model")) {
-            if (opts.model != null or opts.clear_model) return usageErrorResult(allocator, .provider, "`provider update` cannot combine duplicate model updates.", .{});
-            opts.clear_model = true;
-            continue;
-        }
-        if (isHelpFlag(arg)) {
-            return usageErrorResult(allocator, .provider, "`--help` must be used by itself for `provider update`.", .{});
-        }
-        if (std.mem.startsWith(u8, arg, "-")) {
-            return usageErrorResult(allocator, .provider, "unknown flag `{s}` for `provider update`.", .{arg});
-        }
-        if (has_query) {
-            return usageErrorResult(allocator, .provider, "unexpected extra query `{s}` for `provider update`.", .{arg});
-        }
-        opts.query = try allocator.dupe(u8, arg);
-        has_query = true;
-    }
-
-    if (!has_query) return usageErrorResult(allocator, .provider, "`provider update` requires a query.", .{});
-    if (opts.label == null and opts.provider_id == null and opts.base_url == null and opts.api_key == null and opts.model == null and !opts.clear_model) {
-        return usageErrorResult(allocator, .provider, "`provider update` requires at least one update flag.", .{});
-    }
-
-    return .{ .command = .{ .provider = .{ .update = opts } } };
-}
-
-fn parseProviderRemoveArgs(allocator: std.mem.Allocator, rest: []const [:0]const u8) !ParseResult {
-    if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
-        return .{ .command = .{ .help = .provider } };
-    }
-    if (rest.len == 0) return usageErrorResult(allocator, .provider, "`provider remove` requires a query.", .{});
-    if (rest.len > 1) {
-        return usageErrorResult(allocator, .provider, "unexpected extra query `{s}` for `provider remove`.", .{
-            std.mem.sliceTo(rest[1], 0),
-        });
-    }
-    const query = std.mem.sliceTo(rest[0], 0);
-    if (std.mem.startsWith(u8, query, "-")) {
-        return usageErrorResult(allocator, .provider, "unknown flag `{s}` for `provider remove`.", .{query});
-    }
-    return .{ .command = .{ .provider = .{ .remove = .{
-        .query = try allocator.dupe(u8, query),
-    } } } };
 }
 
 pub fn printHelp(auto_cfg: *const registry.AutoSwitchConfig, api_cfg: *const registry.ApiConfig) !void {
@@ -811,10 +590,7 @@ pub fn writeHelp(
         .{ .name = "list disable", .description = "Keep `list` on active-account refresh only" },
     };
     const provider_details = [_]HelpEntry{
-        .{ .name = "add <label> --base-url <url> --api-key <key>", .description = "Create or replace a provider profile" },
-        .{ .name = "list", .description = "List saved provider profiles" },
-        .{ .name = "update <query> [flags...]", .description = "Update one provider profile" },
-        .{ .name = "remove <query>", .description = "Remove one provider profile" },
+        .{ .name = "list", .description = "List provider profiles scanned from config.toml" },
     };
     const parent_indent: usize = 2;
     const child_indent: usize = parent_indent + 4;
@@ -837,9 +613,6 @@ pub fn writeHelp(
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[6].name, commands[6].description);
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[7].name, commands[7].description);
     try writeHelpEntry(out, use_color, child_indent, provider_detail_col, provider_details[0].name, provider_details[0].description);
-    try writeHelpEntry(out, use_color, child_indent, provider_detail_col, provider_details[1].name, provider_details[1].description);
-    try writeHelpEntry(out, use_color, child_indent, provider_detail_col, provider_details[2].name, provider_details[2].description);
-    try writeHelpEntry(out, use_color, child_indent, provider_detail_col, provider_details[3].name, provider_details[3].description);
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[8].name, commands[8].description);
     try writeHelpEntry(out, use_color, parent_indent, command_col, commands[9].name, commands[9].description);
     try writeHelpEntry(out, use_color, child_indent, config_detail_col, config_details[0].name, config_details[0].description);
@@ -999,10 +772,7 @@ fn writeUsageSection(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth remove --all\n");
         },
         .provider => {
-            try out.writeAll("  codex-auth provider add <label> --base-url <url> --api-key <key> [--provider-id <id>] [--model <model>]\n");
             try out.writeAll("  codex-auth provider list\n");
-            try out.writeAll("  codex-auth provider update <query> [--label <label>] [--provider-id <id>] [--base-url <url>] [--api-key <key>] [--model <model>]\n");
-            try out.writeAll("  codex-auth provider remove <query>\n");
         },
         .clean => try out.writeAll("  codex-auth clean\n"),
         .config => {
@@ -1051,10 +821,7 @@ fn writeExamplesSection(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth remove --all\n");
         },
         .provider => {
-            try out.writeAll("  codex-auth provider add openrouter --base-url https://openrouter.ai/api/v1 --api-key sk-test\n");
             try out.writeAll("  codex-auth provider list\n");
-            try out.writeAll("  codex-auth provider update openrouter --model gpt-5.4\n");
-            try out.writeAll("  codex-auth provider remove openrouter\n");
         },
         .clean => try out.writeAll("  codex-auth clean\n"),
         .config => {

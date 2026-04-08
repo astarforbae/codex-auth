@@ -2112,6 +2112,13 @@ pub fn removeProviderProfileById(allocator: std.mem.Allocator, reg: *Registry, p
     return true;
 }
 
+pub fn clearProviderProfiles(allocator: std.mem.Allocator, reg: *Registry) void {
+    for (reg.provider_profiles.items) |*profile| {
+        freeProviderProfile(allocator, profile);
+    }
+    reg.provider_profiles.clearRetainingCapacity();
+}
+
 const LegacyAccountRecord = struct {
     email: []u8,
     alias: []u8,
