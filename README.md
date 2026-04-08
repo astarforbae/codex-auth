@@ -46,6 +46,22 @@ npx @loongphy/codex-auth list
 > Older Bash/PowerShell GitHub-release installs could leave a standalone `codex-auth` binary outside npm's install path.
 > If you previously used those legacy installers, remove the leftover binaries and profile changes during migration.
 
+### Build From Current Source
+
+If you are working from a local checkout and want a one-command rebuild/install of the current branch:
+
+```shell
+bash scripts/dev-install.sh
+```
+
+If `~/.local/bin` is not already on your current `PATH`, use:
+
+```shell
+source scripts/dev-install.sh
+```
+
+That version builds the current source tree, installs `codex-auth` into `~/.local/bin`, updates your shell profile for future shells, and also makes the command available immediately in the current shell.
+
 ### Uninstall
 
 #### npm
