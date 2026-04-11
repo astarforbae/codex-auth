@@ -51,16 +51,22 @@ npx @loongphy/codex-auth list
 If you are working from a local checkout and want a one-command rebuild/install of the current branch:
 
 ```shell
-bash scripts/dev-install.sh
+bash scripts/source-install.sh
 ```
 
 If `~/.local/bin` is not already on your current `PATH`, use:
 
 ```shell
-source scripts/dev-install.sh
+source scripts/source-install.sh
 ```
 
-That version builds the current source tree, installs `codex-auth` into `~/.local/bin`, updates your shell profile for future shells, and also makes the command available immediately in the current shell.
+That version installs Zig automatically if it is missing, builds the current source tree, installs `codex-auth` into `~/.local/bin`, updates your shell profile for future shells, and also makes the command available immediately in the current shell.
+
+If Zig is already installed and you only want the bare source build/install step, you can still run:
+
+```shell
+bash scripts/dev-install.sh
+```
 
 ### Uninstall
 

@@ -8,19 +8,13 @@ fi
 
 usage() {
   cat <<'EOF'
-Build and install codex-auth from the current source checkout for WSL/Linux.
+Compatibility wrapper for scripts/source-install.sh.
 
 Usage:
-  bash scripts/wsl-install.sh [dev-install options...]
-  source scripts/wsl-install.sh [dev-install options...]
+  bash scripts/wsl-install.sh [options...]
+  source scripts/wsl-install.sh [options...]
 
-Examples:
-  bash scripts/wsl-install.sh
-  source scripts/wsl-install.sh --install-dir "$HOME/.local/bin"
-
-Notes:
-  - Run this script inside your WSL/Linux checkout.
-  - It delegates to scripts/dev-install.sh to build from source in the current repo.
+Prefer scripts/source-install.sh for new installs.
 EOF
 }
 
@@ -42,21 +36,15 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   finish 0
 fi
 
-if [[ "$(uname -s)" != "Linux" ]]; then
-  fail "scripts/wsl-install.sh must be run from a Linux environment such as WSL."
-fi
-
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEV_INSTALL="${REPO_ROOT}/scripts/dev-install.sh"
+SOURCE_INSTALL="${REPO_ROOT}/scripts/source-install.sh"
 
-if [[ ! -f "${DEV_INSTALL}" ]]; then
-  fail "Missing install helper: ${DEV_INSTALL}"
+if [[ ! -f "${SOURCE_INSTALL}" ]]; then
+  fail "Missing install helper: ${SOURCE_INSTALL}"
 fi
 
 if [[ "${IS_SOURCED}" -eq 1 ]]; then
-  # Preserve the caller's shell environment when sourced.
-  export CODEX_AUTH_INSTALL_SOURCE_HINT="scripts/wsl-install.sh"
-  source "${DEV_INSTALL}" "$@"
+  source "${SOURCE_INSTALL}" "$@"
 else
-  CODEX_AUTH_INSTALL_SOURCE_HINT="scripts/wsl-install.sh" bash "${DEV_INSTALL}" "$@"
+  bash "${SOURCE_INSTALL}" "$@"
 fi
