@@ -46,6 +46,7 @@ ADD_TO_PATH=1
 SHELL_NAME="$(basename "${SHELL:-bash}")"
 PROFILE_FILE=""
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_HINT="${CODEX_AUTH_INSTALL_SOURCE_HINT:-scripts/dev-install.sh}"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_RESET=$'\033[0m'
@@ -273,7 +274,7 @@ else
     print_cmd "  export PATH=\"${INSTALL_DIR}:\$PATH\""
   fi
   print_warn "Or source this script instead:"
-  print_cmd "  source scripts/dev-install.sh"
+  print_cmd "  source ${SOURCE_HINT}"
 fi
 
 finish 0
